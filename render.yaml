@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: notprofi24-verwaltung
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: NODE_ENV
+        value: production
+      # Set these in Render dashboard (do not commit secrets)
+      # - DATABASE_URL
+      # - ADMIN_EMAIL
+      # - ADMIN_PASSWORD
+      # - SESSION_SECRET
+      # Optional SMTP_* vars

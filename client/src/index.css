@@ -1,0 +1,99 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-body: 'Inter', sans-serif;
+  --font-display: 'Outfit', sans-serif;
+
+  /* Professional Blue/Slate Palette */
+  --background: 210 20% 98%;
+  --foreground: 222 47% 11%;
+  
+  --primary: 221 83% 53%;
+  --primary-foreground: 210 40% 98%;
+  
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 47% 11%;
+  
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  
+  --accent: 221 83% 96%;
+  --accent-foreground: 221 83% 40%;
+  
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 210 40% 98%;
+  
+  --border: 214 32% 91%;
+  --input: 214 32% 91%;
+  --ring: 221 83% 53%;
+  
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: 222 47% 11%;
+  --foreground: 210 40% 98%;
+  
+  --primary: 217 91% 60%;
+  --primary-foreground: 222 47% 11%;
+  
+  --secondary: 217 19% 27%;
+  --secondary-foreground: 210 40% 98%;
+  
+  --muted: 217 19% 27%;
+  --muted-foreground: 215 20% 65%;
+  
+  --accent: 217 19% 27%;
+  --accent-foreground: 210 40% 98%;
+  
+  --destructive: 0 62% 30%;
+  --destructive-foreground: 210 40% 98%;
+  
+  --border: 217 19% 27%;
+  --input: 217 19% 27%;
+  --ring: 217 91% 60%;
+  
+  --card: 222 47% 11%;
+  --card-foreground: 210 40% 98%;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground antialiased selection:bg-primary/20 selection:text-primary;
+    font-family: var(--font-body);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply font-bold tracking-tight text-foreground;
+  }
+}
+
+/* Custom utilities */
+@layer utilities {
+  .glass-panel {
+    @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl shadow-black/5;
+  }
+  
+  .glass-card {
+    @apply bg-card border border-border/50 shadow-sm hover:shadow-md transition-all duration-300;
+  }
+}
+
+/* Page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 300ms ease-out, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}

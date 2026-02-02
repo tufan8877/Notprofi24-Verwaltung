@@ -1,26 +1,19 @@
-import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "@shared/schema";
 
 const { Pool } = pg;
 
-// NOTE (Render/Supabase): In many hosting environments the database uses TLS and
-// certificate chains that Node's default verifier may reject.
-// We enable SSL in production and relax verification to avoid
-// `SELF_SIGNED_CERT_IN_CHAIN` when using Supabase pooler.
-//
-// If DATABASE_URL is missing, we don't crash the whole server; routes that need
-// DB will fail and /api/health can report db:false.
-if (!process.env.DATABASE_URL) {
-  // eslint-disable-next-line no-console
+export const hasDatabaseUrl = !!process.env.DATABASE_URL;
+
+if (!hasDatabaseUrl) {
   console.error("DATABASE_URL is missing. Set it in Render Environment.");
 }
 
-const url = process.env.DATABASE_URL || "";
-const isLocal = url.includes("localhost") || url.includes("127.0.0.1");
-
+// Use SSL for Supabase/Render (fixes self-signed chain issues in many environments)
 export const pool = new Pool({
-  connectionString: url,
-  ssl: isLocal ? undefined : { rejectUnauthorized: false },
+  connectionString: process.env.DATABASE_URL,
+  ssl: hasDatabaseUrl ? { rejectUnauthorized: false } : undefined,
 });
+
 export const db = drizzle(pool, { schema });

@@ -2,9 +2,8 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-export const hasDatabaseUrl = !!process.env.DATABASE_URL;
+export const hasDatabaseUrl = typeof process.env.DATABASE_URL === "string" && process.env.DATABASE_URL.length > 0;
 
-// Pool wird nur erstellt, wenn DATABASE_URL vorhanden ist
 export const pool: pg.Pool | null = hasDatabaseUrl
   ? new Pool({
       connectionString: process.env.DATABASE_URL,

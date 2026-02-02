@@ -12,7 +12,7 @@ process.on("uncaughtException", (e) => console.error("[uncaughtException]", e));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Health – funktioniert auch ohne DB
+// Health endpoint – works even without DB
 app.get("/api/health", async (_req, res) => {
   if (!hasDatabaseUrl || !pool) {
     return res.json({ ok: true, db: false });
@@ -26,14 +26,15 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-// (Optional) Quick Ping
+// Optional ping
 app.get("/api/ping", (_req, res) => res.json({ ok: true }));
 
-// Frontend aus dist/public serven
+// Serve frontend
 serveStatic(app);
 
 const server = createServer(app);
 const port = parseInt(process.env.PORT || "10000", 10);
+
 server.listen(port, "0.0.0.0", () => {
   console.log(`[express] serving on port ${port}`);
 });

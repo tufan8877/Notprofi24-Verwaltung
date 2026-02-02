@@ -5,9 +5,11 @@ import express from "express";
 export function serveStatic(app: Express) {
   const publicDir = path.join(process.cwd(), "dist", "public");
 
+  // static assets
   app.use(express.static(publicDir));
 
-  // WICHTIG: "/*" statt "*" (sonst crasht path-to-regexp bei dir)
+  // SPA fallback
+  // IMPORTANT: use "/*" (NOT "*") to avoid path-to-regexp crash
   app.get("/*", (req, res) => {
     if (req.path.startsWith("/api")) {
       return res.status(404).json({ message: "Not Found" });

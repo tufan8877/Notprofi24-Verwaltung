@@ -1,18 +1,28 @@
 import { db } from "./db";
-import { 
-  propertyManagers, privateCustomers, companies, jobs, invoices, invoiceItems,
-  type PropertyManager, type InsertPropertyManager,
-  type PrivateCustomer, type InsertPrivateCustomer,
-  type Company, type InsertCompany,
-  type Job, type InsertJob,
-  type Invoice, type InsertInvoice,
-  type InvoiceItem
+import {
+  propertyManagers,
+  privateCustomers,
+  companies,
+  jobs,
+  invoices,
+  invoiceItems,
+  type PropertyManager,
+  type InsertPropertyManager,
+  type PrivateCustomer,
+  type InsertPrivateCustomer,
+  type Company,
+  type InsertCompany,
+  type Job,
+  type InsertJob,
+  type Invoice,
+  type InsertInvoice,
+  type InvoiceItem,
 } from "@shared/schema";
-import { eq, desc, and, sql, between } from "drizzle-orm";
+import { eq, desc, and, sql, between, gte, lt } from "drizzle-orm";
 
 export interface IStorage {
   // Auth
-  getUserByEmail(email: string): Promise<{email: string} | undefined>;
+  getUserByEmail(email: string): Promise<{ email: string } | undefined>;
 
   // Property Managers
   getPropertyManagers(): Promise<PropertyManager[]>;
@@ -36,17 +46,34 @@ export interface IStorage {
   deleteCompany(id: number): Promise<void>;
 
   // Jobs
-  getJobs(): Promise<(Job & { company: Company | null, propertyManager: PropertyManager | null, privateCustomer: PrivateCustomer | null })[]>;
-  getJob(id: number): Promise<(Job & { company: Company | null, propertyManager: PropertyManager | null, privateCustomer: PrivateCustomer | null }) | undefined>;
+  getJobs(): Promise<
+    (Job & {
+      company: Company | null;
+      propertyManager: PropertyManager | null;
+      privateCustomer: PrivateCustomer | null;
+    })[]
+  >;
+  getJob(
+    id: number
+  ): Promise<
+    | (Job & {
+        company: Company | null;
+        propertyManager: PropertyManager | null;
+        privateCustomer: PrivateCustomer | null;
+      })
+    | undefined
+  >;
   createJob(job: InsertJob): Promise<Job>;
   updateJob(id: number, job: Partial<InsertJob>): Promise<Job>;
 
   // Invoices
   getInvoices(): Promise<(Invoice & { company: Company | null })[]>;
-  getInvoice(id: number): Promise<(Invoice & { company: Company | null, items: InvoiceItem[] }) | undefined>;
-  createInvoice(invoice: InsertInvoice, items: {jobId: number, amount: number}[]): Promise<Invoice>;
+  getInvoice(
+    id: number
+  ): Promise<(Invoice & { company: Company | null; items: InvoiceItem[] }) | undefined>;
+  createInvoice(invoice: InsertInvoice, items: { jobId: number; amount: number }[]): Promise<Invoice>;
   updateInvoice(id: number, invoice: Partial<InsertInvoice>): Promise<Invoice>;
-  
+
   // Stats
   getStats(): Promise<{
     openJobs: number;
@@ -57,8 +84,8 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
-  async getUserByEmail(email: string): Promise<{email: string} | undefined> {
-    // This is a mock since user requested env var auth
+  async getUserByEmail(email: string): Promise<{ email: string } | undefined> {
+    // Env Var Admin Auth
     if (email === process.env.ADMIN_EMAIL) {
       return { email: process.env.ADMIN_EMAIL };
     }
@@ -132,8 +159,8 @@ export class DatabaseStorage implements IStorage {
       with: {
         company: true,
         propertyManager: true,
-        privateCustomer: true
-      }
+        privateCustomer: true,
+      },
     });
   }
   async getJob(id: number) {
@@ -142,8 +169,8 @@ export class DatabaseStorage implements IStorage {
       with: {
         company: true,
         propertyManager: true,
-        privateCustomer: true
-      }
+        privateCustomer: true,
+      },
     });
   }
   async createJob(job: InsertJob) {
@@ -160,8 +187,8 @@ export class DatabaseStorage implements IStorage {
     return db.query.invoices.findMany({
       orderBy: [desc(invoices.createdAt)],
       with: {
-        company: true
-      }
+        company: true,
+      },
     });
   }
   async getInvoice(id: number) {
@@ -171,25 +198,25 @@ export class DatabaseStorage implements IStorage {
         company: true,
         items: {
           with: {
-            job: true
-          }
-        }
-      }
+            job: true,
+          },
+        },
+      },
     });
   }
-  async createInvoice(invoice: InsertInvoice, items: {jobId: number, amount: number}[]) {
+  async createInvoice(invoice: InsertInvoice, items: { jobId: number; amount: number }[]) {
     const [newInvoice] = await db.insert(invoices).values(invoice).returning();
-    
+
     if (items.length > 0) {
       await db.insert(invoiceItems).values(
-        items.map(item => ({
+        items.map((item) => ({
           invoiceId: newInvoice.id,
           jobId: item.jobId,
-          amount: item.amount.toString()
+          amount: item.amount.toString(),
         }))
       );
     }
-    
+
     return newInvoice;
   }
   async updateInvoice(id: number, invoice: Partial<InsertInvoice>) {
@@ -197,35 +224,37 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  // Stats
+  // ✅ Stats (fix: Monatsende korrekt, kein “00:00”-Bug)
   async getStats() {
-    const [openJobs] = await db.select({ count: sql<number>`count(*)` }).from(jobs).where(eq(jobs.status, 'open'));
-    
-    // Done jobs this month
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    
-    const [doneJobsMonth] = await db.select({ count: sql<number>`count(*)` })
+    const [openJobs] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(jobs)
-      .where(and(
-        eq(jobs.status, 'done'),
-        between(jobs.dateTime, startOfMonth, endOfMonth)
-      ));
+      .where(eq(jobs.status, "open"));
 
-    const [unpaidInvoices] = await db.select({ count: sql<number>`count(*)` }).from(invoices).where(eq(invoices.status, 'unpaid'));
-    
-    const [revenue] = await db.select({ total: sql<number>`sum(total_amount)` })
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+
+    const [doneJobsMonth] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(jobs)
+      .where(and(eq(jobs.status, "done"), gte(jobs.dateTime, start), lt(jobs.dateTime, nextMonthStart)));
+
+    const [unpaidInvoices] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(invoices)
-      .where(and(
-        between(invoices.createdAt, startOfMonth, endOfMonth)
-      ));
+      .where(eq(invoices.status, "unpaid"));
+
+    const [revenue] = await db
+      .select({ total: sql<number>`coalesce(sum(total_amount), 0)` })
+      .from(invoices)
+      .where(and(gte(invoices.createdAt, start), lt(invoices.createdAt, nextMonthStart)));
 
     return {
       openJobs: Number(openJobs?.count || 0),
       doneJobsMonth: Number(doneJobsMonth?.count || 0),
       unpaidInvoices: Number(unpaidInvoices?.count || 0),
-      monthlyRevenue: Number(revenue?.total || 0)
+      monthlyRevenue: Number(revenue?.total || 0),
     };
   }
 }

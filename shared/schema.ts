@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, numeric, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -42,7 +42,7 @@ export const companies = pgTable("companies", {
 // === Einsätze (Jobs) ===
 export const jobs = pgTable("jobs", {
   id: serial("id").primaryKey(),
-  jobNumber: serial("job_number").notNull(), // Using serial for auto-incrementing number
+  jobNumber: serial("job_number").notNull(), // auto-increment
   dateTime: timestamp("date_time").notNull(),
   customerType: text("customer_type").notNull(), // 'property_manager' | 'private_customer'
   propertyManagerId: integer("property_manager_id").references(() => propertyManagers.id),
@@ -50,18 +50,19 @@ export const jobs = pgTable("jobs", {
   serviceAddress: text("service_address").notNull(),
   companyId: integer("company_id").references(() => companies.id).notNull(),
   trade: text("trade").notNull(),
-  activity: text("activity").notNull(), // Description of work
+  activity: text("activity").notNull(),
   status: text("status").notNull().default("open"), // 'open', 'done', 'canceled'
   reportText: text("report_text"),
-  referralFee: numeric("referral_fee").notNull().default("60"),
+  // ✅ du wolltest 49 + Steuer pro Einsatz — hier ist der Default 49 (netto)
+  referralFee: numeric("referral_fee").notNull().default("49"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
 // === Abrechnungen (Invoices) ===
 export const invoices = pgTable("invoices", {
   id: serial("id").primaryKey(),
-  invoiceNumber: text("invoice_number").notNull(), // Format: YYYYMM-CompanyID
-  monthYear: text("month_year").notNull(), // Format: YYYY-MM
+  invoiceNumber: text("invoice_number").notNull(), // YYYYMM-CompanyID
+  monthYear: text("month_year").notNull(), // YYYY-MM
   companyId: integer("company_id").references(() => companies.id).notNull(),
   status: text("status").notNull().default("unpaid"), // 'unpaid', 'paid'
   totalAmount: numeric("total_amount").notNull(),
@@ -121,7 +122,21 @@ export const invoiceItemsRelations = relations(invoiceItems, ({ one }) => ({
 export const insertPropertyManagerSchema = createInsertSchema(propertyManagers).omit({ id: true, createdAt: true });
 export const insertPrivateCustomerSchema = createInsertSchema(privateCustomers).omit({ id: true, createdAt: true });
 export const insertCompanySchema = createInsertSchema(companies).omit({ id: true, createdAt: true });
-export const insertJobSchema = createInsertSchema(jobs).omit({ id: true, jobNumber: true, createdAt: true });
+
+// ✅ WICHTIG: dateTime kommt vom Browser als ISO-String -> hier wird es zu Date konvertiert
+const dateTimeSchema = z.preprocess((v) => {
+  if (v instanceof Date) return v;
+  if (typeof v === "string" || typeof v === "number") {
+    const d = new Date(v);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return v;
+}, z.date());
+
+export const insertJobSchema = createInsertSchema(jobs, {
+  dateTime: dateTimeSchema,
+}).omit({ id: true, jobNumber: true, createdAt: true });
+
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
 
 // Types
@@ -139,4 +154,4 @@ export type InvoiceItem = typeof invoiceItems.$inferSelect;
 // Request Types
 export type CreateJobRequest = InsertJob;
 export type UpdateJobRequest = Partial<InsertJob>;
-export type GenerateInvoicesRequest = { monthYear: string }; // YYYY-MM
+export type GenerateInvoicesRequest = { monthYear: string };

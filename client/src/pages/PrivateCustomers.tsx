@@ -1,5 +1,9 @@
 import { DataTable } from "@/components/DataTable";
-import { usePrivateCustomers, useCreatePrivateCustomer, useUpdatePrivateCustomer } from "@/hooks/use-private-customers";
+import {
+  usePrivateCustomers,
+  useCreatePrivateCustomer,
+  useUpdatePrivateCustomer,
+} from "@/hooks/use-private-customers";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -9,6 +13,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { Textarea } from "@/components/ui/textarea";
 
 export default function PrivateCustomers() {
   const { data: customers, isLoading } = usePrivateCustomers();
@@ -20,11 +25,19 @@ export default function PrivateCustomers() {
     { header: "Adresse", accessorKey: "address" },
     { header: "Telefon", accessorKey: "phone" },
     { header: "Email", accessorKey: "email" },
-    { 
-      header: "Aktionen", 
+    {
+      header: "Aktionen",
       cell: (item: any) => (
-        <Button variant="link" onClick={() => { setEditingItem(item); setIsOpen(true); }}>Bearbeiten</Button>
-      )
+        <Button
+          variant="link"
+          onClick={() => {
+            setEditingItem(item);
+            setIsOpen(true);
+          }}
+        >
+          Bearbeiten
+        </Button>
+      ),
     },
   ];
 
@@ -32,26 +45,36 @@ export default function PrivateCustomers() {
     <div className="space-y-8">
       <div>
         <h2 className="text-3xl font-display font-bold text-slate-900">Privatkunden</h2>
-        <p className="text-slate-500 mt-2">Privatkunden verwalten</p>
+        <p className="text-slate-500 mt-2">Privatkunden anlegen & durchsuchen</p>
       </div>
-      <DataTable 
-        data={customers || []} 
-        columns={columns} 
-        searchKey="name"
+
+      <DataTable
+        data={customers || []}
+        columns={columns}
+        searchKeys={["name", "address", "phone", "email", "notes"]}
+        searchPlaceholder="Suche: Name, Adresse, Telefon, Email, Notes..."
         isLoading={isLoading}
-        onCreate={() => { setEditingItem(null); setIsOpen(true); }}
-        createLabel="Neuen Kunden anlegen"
+        onCreate={() => {
+          setEditingItem(null);
+          setIsOpen(true);
+        }}
+        createLabel="Neuer Privatkunde"
       />
-      <CustomerDialog 
-        open={isOpen} 
-        onOpenChange={setIsOpen} 
-        item={editingItem} 
-      />
+
+      <CustomerDialog open={isOpen} onOpenChange={setIsOpen} item={editingItem} />
     </div>
   );
 }
 
-function CustomerDialog({ open, onOpenChange, item }: { open: boolean, onOpenChange: (open: boolean) => void, item?: any }) {
+function CustomerDialog({
+  open,
+  onOpenChange,
+  item,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  item?: any;
+}) {
   const { mutateAsync: create } = useCreatePrivateCustomer();
   const { mutateAsync: update } = useUpdatePrivateCustomer();
   const { toast } = useToast();
@@ -59,7 +82,7 @@ function CustomerDialog({ open, onOpenChange, item }: { open: boolean, onOpenCha
   const form = useForm({
     resolver: zodResolver(api.privateCustomers.create.input),
     defaultValues: item || { name: "", address: "", phone: "", email: "", notes: "" },
-    values: item 
+    values: item,
   });
 
   async function onSubmit(data: any) {
@@ -73,17 +96,19 @@ function CustomerDialog({ open, onOpenChange, item }: { open: boolean, onOpenCha
       }
       onOpenChange(false);
       form.reset();
-    } catch (e) {
-      toast({ title: "Fehler", variant: "destructive" });
+    } catch (e: any) {
+      toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
+      console.error(e);
     }
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{item ? "Kunde Bearbeiten" : "Neuer Privatkunde"}</DialogTitle>
+          <DialogTitle>{item ? "Privatkunde bearbeiten" : "Neuer Privatkunde"}</DialogTitle>
         </DialogHeader>
+
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
             <FormField
@@ -92,46 +117,71 @@ function CustomerDialog({ open, onOpenChange, item }: { open: boolean, onOpenCha
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Name</FormLabel>
-                  <FormControl><Input {...field} /></FormControl>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
+
             <FormField
               control={form.control}
               name="address"
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Adresse</FormLabel>
-                  <FormControl><Input {...field} /></FormControl>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
+
             <div className="grid grid-cols-2 gap-4">
-              <FormField
-                control={form.control}
-                name="email"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Email</FormLabel>
-                    <FormControl><Input {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
               <FormField
                 control={form.control}
                 name="phone"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Telefon</FormLabel>
-                    <FormControl><Input {...field} /></FormControl>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Email</FormLabel>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
               />
             </div>
+
+            <FormField
+              control={form.control}
+              name="notes"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Notizen</FormLabel>
+                  <FormControl>
+                    <Textarea rows={4} {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
             <div className="flex justify-end pt-4">
               <Button type="submit">{item ? "Speichern" : "Erstellen"}</Button>
             </div>

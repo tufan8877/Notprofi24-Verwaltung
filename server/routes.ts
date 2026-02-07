@@ -1,16 +1,14 @@
 import type { Express, Request, Response, NextFunction } from "express";
-import { createServer, type Server } from "http";
+import { type Server } from "http";
 import { storage } from "./storage";
-import { api, errorSchemas } from "@shared/routes";
-import { z } from "zod";
+import { api } from "@shared/routes";
 import session from "express-session";
 import MemoryStore from "memorystore";
 import { generateJobPdf, generateInvoicePdf } from "./pdf";
-import nodemailer from "nodemailer";
-import { startOfMonth, endOfMonth, parseISO, format } from "date-fns";
+import { startOfMonth, endOfMonth, parseISO } from "date-fns";
 import { db } from "./db";
 import { jobs, invoiceItems } from "@shared/schema";
-import { and, eq, inArray, between } from "drizzle-orm";
+import { and, eq, between } from "drizzle-orm";
 
 const SessionStore = MemoryStore(session);
 
@@ -26,7 +24,6 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  
   // Setup Session
   app.use(
     session({
@@ -36,23 +33,14 @@ export async function registerRoutes(
       secret: process.env.SESSION_SECRET || "default_secret_please_change",
       resave: false,
       saveUninitialized: false,
-      cookie: { 
+      cookie: {
         secure: process.env.NODE_ENV === "production",
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        // damit Cookies hinter Render Proxy sauber funktionieren:
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
       },
     })
   );
-
-  // Email Transporter
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.example.com',
-    port: Number(process.env.SMTP_PORT) || 587,
-    secure: false, // true for 465, false for other ports
-    auth: {
-      user: process.env.SMTP_USER || 'user',
-      pass: process.env.SMTP_PASS || 'pass',
-    },
-  });
 
   // Auth Middleware
   const requireAuth = (req: Request, res: Response, next: NextFunction) => {
@@ -78,17 +66,14 @@ export async function registerRoutes(
   // === AUTH ROUTES ===
   app.post(api.auth.login.path, async (req, res) => {
     const { email, password } = api.auth.login.input.parse(req.body);
-    
+
     // Check against ENV variables as requested
-    if (
-      email === process.env.ADMIN_EMAIL && 
-      password === process.env.ADMIN_PASSWORD
-    ) {
+    if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
       req.session.isAdmin = true;
       req.session.userEmail = email;
       return res.json({ message: "Logged in successfully" });
     }
-    
+
     res.status(401).json({ message: "Invalid credentials" });
   });
 
@@ -107,15 +92,15 @@ export async function registerRoutes(
   });
 
   // Protect all API routes below
-  app.use('/api', (req, res, next) => {
-    if (req.path === '/login' || req.path === '/logout' || req.path === '/me' || req.path === '/health') {
+  app.use("/api", (req, res, next) => {
+    if (req.path === "/login" || req.path === "/logout" || req.path === "/me" || req.path === "/health") {
       return next();
     }
     requireAuth(req, res, next);
   });
 
   // === PROPERTY MANAGERS ===
-  app.get(api.propertyManagers.list.path, async (req, res) => {
+  app.get(api.propertyManagers.list.path, async (_req, res) => {
     const data = await storage.getPropertyManagers();
     res.json(data);
   });
@@ -138,7 +123,7 @@ export async function registerRoutes(
   });
 
   // === PRIVATE CUSTOMERS ===
-  app.get(api.privateCustomers.list.path, async (req, res) => {
+  app.get(api.privateCustomers.list.path, async (_req, res) => {
     const data = await storage.getPrivateCustomers();
     res.json(data);
   });
@@ -161,7 +146,7 @@ export async function registerRoutes(
   });
 
   // === COMPANIES ===
-  app.get(api.companies.list.path, async (req, res) => {
+  app.get(api.companies.list.path, async (_req, res) => {
     const data = await storage.getCompanies();
     res.json(data);
   });
@@ -184,7 +169,7 @@ export async function registerRoutes(
   });
 
   // === JOBS ===
-  app.get(api.jobs.list.path, async (req, res) => {
+  app.get(api.jobs.list.path, async (_req, res) => {
     const data = await storage.getJobs();
     res.json(data);
   });
@@ -210,52 +195,29 @@ export async function registerRoutes(
   app.post(api.jobs.generatePdf.path, async (req, res) => {
     const job = await storage.getJob(Number(req.params.id));
     if (!job) return res.status(404).json({ message: "Job not found" });
-    
+
     const pdfBytes = await generateJobPdf(job, job.company, job.propertyManager, job.privateCustomer);
-    
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=job-${job.jobNumber}.pdf`);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=job-${job.jobNumber}.pdf`);
     res.send(Buffer.from(pdfBytes));
   });
 
-  app.post(api.jobs.sendEmail.path, async (req, res) => {
-    const job = await storage.getJob(Number(req.params.id));
-    if (!job) return res.status(404).json({ message: "Job not found" });
-    
-    const pdfBytes = await generateJobPdf(job, job.company, job.propertyManager, job.privateCustomer);
-    
-    let recipientEmail = '';
-    if (job.propertyManager) recipientEmail = job.propertyManager.email;
-    else if (job.privateCustomer) recipientEmail = job.privateCustomer.email;
-    
-    if (!recipientEmail) return res.status(400).json({ success: false, message: "No customer email found" });
-
-    try {
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || '"Notprofi24.at" <noreply@notprofi24.at>',
-        to: recipientEmail,
-        subject: `Einsatzbericht #${job.jobNumber}`,
-        text: `Sehr geehrte Damen und Herren,\n\nanbei erhalten Sie den Einsatzbericht für den Auftrag #${job.jobNumber}.\n\nMit freundlichen Grüßen,\nIhr Notprofi24.at Team`,
-        attachments: [
-          {
-            filename: `job-${job.jobNumber}.pdf`,
-            content: Buffer.from(pdfBytes),
-          },
-        ],
-      });
-      res.json({ success: true, message: "Email sent successfully" });
-    } catch (error: any) {
-      console.error("Email sending failed:", error);
-      res.status(500).json({ success: false, message: "Failed to send email: " + error.message });
-    }
+  // ❌ EMAIL-FUNKTION DEAKTIVIERT (du wolltest keine automatischen E-Mails)
+  app.post(api.jobs.sendEmail.path, async (_req, res) => {
+    res.status(501).json({
+      success: false,
+      message: "E-Mail Versand ist deaktiviert. Bitte manuell per E-Mail/Telefon senden.",
+    });
   });
 
   // === INVOICES ===
-  app.get(api.invoices.list.path, async (req, res) => {
+  app.get(api.invoices.list.path, async (_req, res) => {
     const data = await storage.getInvoices();
     res.json(data);
   });
 
+  // Monatliche Generierung (bestehend) – Preis angepasst: 49 EUR pro Job (NETTO)
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
     // monthYear is YYYY-MM
@@ -264,10 +226,10 @@ export async function registerRoutes(
     const end = endOfMonth(date);
 
     // 1. Get all DONE jobs in range
-    const doneJobs = await db.select().from(jobs).where(and(
-      eq(jobs.status, 'done'),
-      between(jobs.dateTime, start, end)
-    ));
+    const doneJobs = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.status, "done"), between(jobs.dateTime, start, end)));
 
     if (doneJobs.length === 0) {
       return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
@@ -275,10 +237,10 @@ export async function registerRoutes(
 
     // 2. Check which ones are already invoiced
     const existingItems = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
-    const alreadyInvoicedIds = new Set(existingItems.map(i => i.jobId));
-    
-    const jobsToInvoice = doneJobs.filter(j => !alreadyInvoicedIds.has(j.id));
-    
+    const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
+
+    const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
+
     if (jobsToInvoice.length === 0) {
       return res.json({ generatedCount: 0, message: "All done jobs for this month are already invoiced" });
     }
@@ -294,21 +256,26 @@ export async function registerRoutes(
 
     // 4. Create Invoices
     let generatedCount = 0;
+    const PRICE_PER_JOB_NET = 49; // ✅ angepasst
+
     for (const [companyId, companyJobs] of jobsByCompany.entries()) {
-      const totalAmount = companyJobs.length * 60; // 60 EUR per job
-      const invoiceNumber = `${monthYear.replace('-', '')}-${companyId}-${Date.now().toString().slice(-4)}`;
-      
-      await storage.createInvoice({
-        invoiceNumber,
-        monthYear,
-        companyId,
-        status: 'unpaid',
-        totalAmount: totalAmount.toString(),
-        createdAt: new Date(),
-        sentAt: null,
-        paidAt: null
-      }, companyJobs.map(j => ({ jobId: j.id, amount: 60 })));
-      
+      const totalAmount = companyJobs.length * PRICE_PER_JOB_NET; // netto
+      const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
+
+      await storage.createInvoice(
+        {
+          invoiceNumber,
+          monthYear,
+          companyId,
+          status: "unpaid",
+          totalAmount: totalAmount.toString(), // weiterhin wie dein Schema es erwartet
+          createdAt: new Date(),
+          sentAt: null,
+          paidAt: null,
+        },
+        companyJobs.map((j) => ({ jobId: j.id, amount: PRICE_PER_JOB_NET }))
+      );
+
       generatedCount++;
     }
 
@@ -316,9 +283,9 @@ export async function registerRoutes(
   });
 
   app.post(api.invoices.markPaid.path, async (req, res) => {
-    const data = await storage.updateInvoice(Number(req.params.id), { 
-      status: 'paid', 
-      paidAt: new Date() 
+    const data = await storage.updateInvoice(Number(req.params.id), {
+      status: "paid",
+      paidAt: new Date(),
     });
     res.json(data);
   });
@@ -326,61 +293,30 @@ export async function registerRoutes(
   app.post(api.invoices.generatePdf.path, async (req, res) => {
     const invoice = await storage.getInvoice(Number(req.params.id));
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-    
+
     // get items with job details
-    const items = invoice.items.map(item => ({
+    const items = invoice.items.map((item) => ({
       ...item,
-      job: (item as any).job // populated in storage.getInvoice
+      job: (item as any).job, // populated in storage.getInvoice
     }));
-    
+
     const pdfBytes = await generateInvoicePdf(invoice, invoice.company, items);
-    
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=invoice-${invoice.invoiceNumber}.pdf`);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=invoice-${invoice.invoiceNumber}.pdf`);
     res.send(Buffer.from(pdfBytes));
   });
 
-  app.post(api.invoices.sendEmail.path, async (req, res) => {
-    const invoice = await storage.getInvoice(Number(req.params.id));
-    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-    
-    // get items with job details
-    const items = invoice.items.map(item => ({
-      ...item,
-      job: (item as any).job 
-    }));
-    
-    const pdfBytes = await generateInvoicePdf(invoice, invoice.company, items);
-    
-    const recipientEmail = invoice.company?.email;
-    if (!recipientEmail) return res.status(400).json({ success: false, message: "No company email found" });
-
-    try {
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || '"Notprofi24.at" <noreply@notprofi24.at>',
-        to: recipientEmail,
-        subject: `Rechnung ${invoice.monthYear} - ${invoice.invoiceNumber}`,
-        text: `Sehr geehrte Damen und Herren,\n\nanbei erhalten Sie die Abrechnung für ${invoice.monthYear}.\n\nMit freundlichen Grüßen,\nIhr Notprofi24.at Team`,
-        attachments: [
-          {
-            filename: `invoice-${invoice.invoiceNumber}.pdf`,
-            content: Buffer.from(pdfBytes),
-          },
-        ],
-      });
-      
-      // Update sentAt
-      await storage.updateInvoice(invoice.id, { sentAt: new Date() });
-      
-      res.json({ success: true, message: "Email sent successfully" });
-    } catch (error: any) {
-      console.error("Email sending failed:", error);
-      res.status(500).json({ success: false, message: "Failed to send email: " + error.message });
-    }
+  // ❌ EMAIL-FUNKTION DEAKTIVIERT (du wolltest keine automatischen E-Mails)
+  app.post(api.invoices.sendEmail.path, async (_req, res) => {
+    res.status(501).json({
+      success: false,
+      message: "E-Mail Versand ist deaktiviert. Bitte manuell per E-Mail/Telefon senden.",
+    });
   });
 
   // === STATS ===
-  app.get(api.stats.dashboard.path, async (req, res) => {
+  app.get(api.stats.dashboard.path, async (_req, res) => {
     const data = await storage.getStats();
     res.json(data);
   });

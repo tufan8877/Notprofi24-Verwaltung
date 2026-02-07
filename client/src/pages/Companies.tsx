@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 
 export default function Companies() {
   const { data: companies, isLoading } = useCompanies();
@@ -20,13 +21,14 @@ export default function Companies() {
   const columns = [
     { header: "Firma", accessorKey: "companyName", className: "font-bold" },
     { header: "Kontakt", accessorKey: "contactName" },
+    { header: "Telefon", accessorKey: "phone" },
     { header: "Email", accessorKey: "email" },
     {
       header: "Gewerke",
       accessorKey: "trades",
       cell: (item: any) => (
         <div className="flex flex-wrap gap-1">
-          {item.trades.map((t: string) => (
+          {(item.trades || []).map((t: string) => (
             <Badge key={t} variant="secondary" className="text-xs">
               {t}
             </Badge>
@@ -69,7 +71,17 @@ export default function Companies() {
       <DataTable
         data={companies || []}
         columns={columns}
-        searchKey="companyName"
+        searchKeys={[
+          "companyName",
+          "contactName",
+          "address",
+          "phone",
+          "email",
+          "notes",
+          "trades",
+          "isActive",
+        ]}
+        searchPlaceholder="Suche: Firmenname, Kontakt, Adresse, Telefon, Email, Gewerk, Notes..."
         isLoading={isLoading}
         onCreate={() => {
           setEditingItem(null);
@@ -83,7 +95,15 @@ export default function Companies() {
   );
 }
 
-function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChange: (open: boolean) => void; item?: any }) {
+function CompanyDialog({
+  open,
+  onOpenChange,
+  item,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  item?: any;
+}) {
   const { mutateAsync: create } = useCreateCompany();
   const { mutateAsync: update } = useUpdateCompany();
   const { toast } = useToast();
@@ -103,7 +123,7 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
     values: item,
   });
 
-  const availableTrades = ["Installateur", "Elektriker", "Maler", "Schlosser", "Tischler", "Bodenleger", "Glaser", "Dachdecker"];
+  const availableTrades = ["Installateur", "Elektriker", "Dachdecker", "Schlosser", "Maler", "Glaser"];
 
   async function onSubmit(data: any) {
     try {
@@ -128,9 +148,9 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>{item ? "Firma Bearbeiten" : "Neue Partnerfirma"}</DialogTitle>
+          <DialogTitle>{item ? "Firma bearbeiten" : "Neue Partnerfirma"}</DialogTitle>
         </DialogHeader>
 
         <Form {...form}>
@@ -181,10 +201,10 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}
-                name="email"
+                name="phone"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email</FormLabel>
+                    <FormLabel>Telefon</FormLabel>
                     <FormControl>
                       <Input {...field} />
                     </FormControl>
@@ -194,10 +214,10 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
               />
               <FormField
                 control={form.control}
-                name="phone"
+                name="email"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Telefon</FormLabel>
+                    <FormLabel>Email</FormLabel>
                     <FormControl>
                       <Input {...field} />
                     </FormControl>
@@ -245,8 +265,22 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
                   </FormControl>
                   <div className="space-y-1 leading-none">
                     <FormLabel>Aktiv</FormLabel>
-                    <p className="text-sm text-muted-foreground">Ist diese Firma aktuell für Aufträge verfügbar?</p>
+                    <p className="text-sm text-muted-foreground">Ist diese Firma aktuell verfügbar?</p>
                   </div>
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="notes"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Notizen</FormLabel>
+                  <FormControl>
+                    <Textarea rows={4} {...field} />
+                  </FormControl>
+                  <FormMessage />
                 </FormItem>
               )}
             />

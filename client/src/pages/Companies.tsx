@@ -21,16 +21,18 @@ export default function Companies() {
     { header: "Firma", accessorKey: "companyName", className: "font-bold" },
     { header: "Kontakt", accessorKey: "contactName" },
     { header: "Email", accessorKey: "email" },
-    { 
-      header: "Gewerke", 
+    {
+      header: "Gewerke",
       accessorKey: "trades",
       cell: (item: any) => (
         <div className="flex flex-wrap gap-1">
           {item.trades.map((t: string) => (
-            <Badge key={t} variant="secondary" className="text-xs">{t}</Badge>
+            <Badge key={t} variant="secondary" className="text-xs">
+              {t}
+            </Badge>
           ))}
         </div>
-      )
+      ),
     },
     {
       header: "Status",
@@ -39,13 +41,21 @@ export default function Companies() {
         <Badge variant={item.isActive ? "default" : "destructive"}>
           {item.isActive ? "Aktiv" : "Inaktiv"}
         </Badge>
-      )
+      ),
     },
-    { 
-      header: "Aktionen", 
+    {
+      header: "Aktionen",
       cell: (item: any) => (
-        <Button variant="link" onClick={() => { setEditingItem(item); setIsOpen(true); }}>Bearbeiten</Button>
-      )
+        <Button
+          variant="link"
+          onClick={() => {
+            setEditingItem(item);
+            setIsOpen(true);
+          }}
+        >
+          Bearbeiten
+        </Button>
+      ),
     },
   ];
 
@@ -55,32 +65,42 @@ export default function Companies() {
         <h2 className="text-3xl font-display font-bold text-slate-900">Partnerbetriebe</h2>
         <p className="text-slate-500 mt-2">Handwerker und Firmen verwalten</p>
       </div>
-      <DataTable 
-        data={companies || []} 
-        columns={columns} 
+
+      <DataTable
+        data={companies || []}
+        columns={columns}
         searchKey="companyName"
         isLoading={isLoading}
-        onCreate={() => { setEditingItem(null); setIsOpen(true); }}
+        onCreate={() => {
+          setEditingItem(null);
+          setIsOpen(true);
+        }}
         createLabel="Neue Firma"
       />
-      <CompanyDialog 
-        open={isOpen} 
-        onOpenChange={setIsOpen} 
-        item={editingItem} 
-      />
+
+      <CompanyDialog open={isOpen} onOpenChange={setIsOpen} item={editingItem} />
     </div>
   );
 }
 
-function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChange: (open: boolean) => void, item?: any }) {
+function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChange: (open: boolean) => void; item?: any }) {
   const { mutateAsync: create } = useCreateCompany();
   const { mutateAsync: update } = useUpdateCompany();
   const { toast } = useToast();
 
   const form = useForm({
     resolver: zodResolver(api.companies.create.input),
-    defaultValues: item || { companyName: "", contactName: "", address: "", phone: "", email: "", trades: [], isActive: true, notes: "" },
-    values: item 
+    defaultValues: item || {
+      companyName: "",
+      contactName: "",
+      address: "",
+      phone: "",
+      email: "",
+      trades: [],
+      isActive: true,
+      notes: "",
+    },
+    values: item,
   });
 
   const availableTrades = ["Installateur", "Elektriker", "Maler", "Schlosser", "Tischler", "Bodenleger", "Glaser", "Dachdecker"];
@@ -96,8 +116,13 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
       }
       onOpenChange(false);
       form.reset();
-    } catch (e) {
-      toast({ title: "Fehler", variant: "destructive" });
+    } catch (e: any) {
+      toast({
+        title: "Fehler",
+        description: String(e?.message ?? e),
+        variant: "destructive",
+      });
+      console.error(e);
     }
   }
 
@@ -107,16 +132,19 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
         <DialogHeader>
           <DialogTitle>{item ? "Firma Bearbeiten" : "Neue Partnerfirma"}</DialogTitle>
         </DialogHeader>
+
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-             <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}
                 name="companyName"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Firmenname</FormLabel>
-                    <FormControl><Input {...field} /></FormControl>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -127,25 +155,29 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Ansprechpartner</FormLabel>
-                    <FormControl><Input {...field} /></FormControl>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
               />
             </div>
-            
+
             <FormField
               control={form.control}
               name="address"
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Adresse</FormLabel>
-                  <FormControl><Input {...field} /></FormControl>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
-            
+
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}
@@ -153,7 +185,9 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Email</FormLabel>
-                    <FormControl><Input {...field} /></FormControl>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -164,7 +198,9 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Telefon</FormLabel>
-                    <FormControl><Input {...field} /></FormControl>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -180,18 +216,15 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
                   <div className="grid grid-cols-2 gap-2">
                     {availableTrades.map((trade) => (
                       <div key={trade} className="flex items-center space-x-2">
-                        <Checkbox 
-                          id={trade} 
+                        <Checkbox
+                          id={trade}
                           checked={field.value.includes(trade)}
                           onCheckedChange={(checked) => {
-                            if (checked) {
-                              field.onChange([...field.value, trade]);
-                            } else {
-                              field.onChange(field.value.filter((t: string) => t !== trade));
-                            }
+                            if (checked) field.onChange([...field.value, trade]);
+                            else field.onChange(field.value.filter((t: string) => t !== trade));
                           }}
                         />
-                        <label htmlFor={trade} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                        <label htmlFor={trade} className="text-sm font-medium leading-none">
                           {trade}
                         </label>
                       </div>
@@ -202,22 +235,17 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
               )}
             />
 
-             <FormField
+            <FormField
               control={form.control}
               name="isActive"
               render={({ field }) => (
                 <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
                   <FormControl>
-                    <Checkbox
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
-                    />
+                    <Checkbox checked={field.value} onCheckedChange={field.onChange} />
                   </FormControl>
                   <div className="space-y-1 leading-none">
                     <FormLabel>Aktiv</FormLabel>
-                    <p className="text-sm text-muted-foreground">
-                      Ist diese Firma aktuell für Aufträge verfügbar?
-                    </p>
+                    <p className="text-sm text-muted-foreground">Ist diese Firma aktuell für Aufträge verfügbar?</p>
                   </div>
                 </FormItem>
               )}

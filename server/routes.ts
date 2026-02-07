@@ -20,7 +20,6 @@ declare module "express-session" {
   }
 }
 
-// --- Helpers ---
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let t: NodeJS.Timeout;
   const timeout = new Promise<never>((_, rej) => {
@@ -36,7 +35,6 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<any>) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // Sessions
   app.use(
     session({
       store: new SessionStore({ checkPeriod: 86400000 }),
@@ -56,7 +54,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(401).json({ message: "Unauthorized" });
   };
 
-  // Health
+  // ✅ DB Health
   app.get(
     "/api/health",
     asyncHandler(async (_req, res) => {
@@ -69,7 +67,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // Diagnose (zeigt Tabellen)
+  // ✅ DB Diagnose: listet Tabellen in public
   app.get(
     "/api/diagnose",
     asyncHandler(async (_req, res) => {
@@ -103,7 +101,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         req.session.userEmail = email;
         return res.json({ message: "Logged in successfully" });
       }
-
       res.status(401).json({ message: "Invalid credentials" });
     })
   );
@@ -117,7 +114,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(401).json({ message: "Unauthorized" });
   });
 
-  // Protect all /api routes except auth + health/diagnose
+  // Protect all /api except auth + health/diagnose
   app.use("/api", (req, res, next) => {
     if (
       req.path === "/login" ||
@@ -131,7 +128,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     requireAuth(req, res, next);
   });
 
-  // PROPERTY MANAGERS (Hausverwaltungen)
+  // PROPERTY MANAGERS
   app.get(
     api.propertyManagers.list.path,
     asyncHandler(async (_req, res) => {
@@ -245,15 +242,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  app.get(
-    api.jobs.get.path,
-    asyncHandler(async (req, res) => {
-      const data = await withTimeout(storage.getJob(Number(req.params.id)), 12000, "getJob");
-      if (!data) return res.status(404).json({ message: "Job not found" });
-      res.json(data);
-    })
-  );
-
   app.post(
     api.jobs.create.path,
     asyncHandler(async (req, res) => {
@@ -290,14 +278,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // EMAIL deaktiviert
-  app.post(api.jobs.sendEmail.path, (_req, res) => {
-    res.status(501).json({
-      success: false,
-      message: "E-Mail Versand ist deaktiviert. Bitte manuell per E-Mail/Telefon senden.",
-    });
-  });
-
   // INVOICES
   app.get(
     api.invoices.list.path,
@@ -307,6 +287,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
+  // ✅ 49€ netto pro erledigtem Job
   app.post(
     api.invoices.generate.path,
     asyncHandler(async (req, res) => {
@@ -323,7 +304,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       if (doneJobs.length === 0) return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
 
-      const existingItems = await withTimeout(db.select({ jobId: invoiceItems.jobId }).from(invoiceItems), 15000, "select invoice items");
+      const existingItems = await withTimeout(
+        db.select({ jobId: invoiceItems.jobId }).from(invoiceItems),
+        15000,
+        "select invoice items"
+      );
       const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
       const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
 
@@ -368,21 +353,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   );
 
   app.post(
-    api.invoices.markPaid.path,
-    asyncHandler(async (req, res) => {
-      const data = await withTimeout(storage.updateInvoice(Number(req.params.id), { status: "paid", paidAt: new Date() } as any), 12000, "markPaid");
-      res.json(data);
-    })
-  );
-
-  app.post(
     api.invoices.generatePdf.path,
     asyncHandler(async (req, res) => {
       const invoice = await withTimeout(storage.getInvoice(Number(req.params.id)), 12000, "getInvoice");
       if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
       const items = (invoice as any).items.map((it: any) => ({ ...it, job: it.job }));
-      const pdfBytes = await withTimeout(generateInvoicePdf(invoice as any, (invoice as any).company, items), 15000, "generateInvoicePdf");
+      const pdfBytes = await withTimeout(
+        generateInvoicePdf(invoice as any, (invoice as any).company, items),
+        15000,
+        "generateInvoicePdf"
+      );
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename=invoice-${(invoice as any).invoiceNumber}.pdf`);
@@ -390,40 +371,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  app.post(api.invoices.sendEmail.path, (_req, res) => {
-    res.status(501).json({
-      success: false,
-      message: "E-Mail Versand ist deaktiviert. Bitte manuell per E-Mail/Telefon senden.",
-    });
-  });
-
-  app.get(
-    api.stats.dashboard.path,
-    asyncHandler(async (_req, res) => {
-      const data = await withTimeout(storage.getStats(), 12000, "getStats");
-      res.json(data);
-    })
-  );
-
-  // ✅ Global Error Handler: ZodError -> 400 + Details, DB Fehler -> 500
+  // ✅ GLOBAL ERROR HANDLER (wichtig!)
   app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
-    console.error("\n[API ERROR]");
-    console.error("PATH:", req.method, req.originalUrl);
+    console.error("\n[API ERROR]", req.method, req.originalUrl);
     console.error("BODY:", req.body);
     console.error(err);
 
     if (err instanceof ZodError) {
-      return res.status(400).json({
-        message: "Validation error",
-        issues: err.issues,
-      });
+      return res.status(400).json({ message: "Validation error", issues: err.issues });
     }
-
-    const msg = String(err?.message ?? err);
-    return res.status(500).json({
-      message: "Server error",
-      error: msg,
-    });
+    return res.status(500).json({ message: "Server error", error: String(err?.message ?? err) });
   });
 
   return httpServer;

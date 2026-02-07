@@ -1,5 +1,5 @@
 import type { Express, Request, Response, NextFunction } from "express";
-import { type Server } from "http";
+import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import session from "express-session";
@@ -12,7 +12,6 @@ import { and, eq, between } from "drizzle-orm";
 
 const SessionStore = MemoryStore(session);
 
-// Types extension for session
 declare module "express-session" {
   interface SessionData {
     isAdmin: boolean;
@@ -20,54 +19,41 @@ declare module "express-session" {
   }
 }
 
-export async function registerRoutes(
-  httpServer: Server,
-  app: Express
-): Promise<Server> {
-  // Setup Session
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use(
     session({
-      store: new SessionStore({
-        checkPeriod: 86400000, // prune expired entries every 24h
-      }),
+      store: new SessionStore({ checkPeriod: 86400000 }),
       secret: process.env.SESSION_SECRET || "default_secret_please_change",
       resave: false,
       saveUninitialized: false,
       cookie: {
         secure: process.env.NODE_ENV === "production",
-        // damit Cookies hinter Render Proxy sauber funktionieren:
         sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        maxAge: 24 * 60 * 60 * 1000,
       },
     })
   );
 
-  // Auth Middleware
   const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    if (req.session.isAdmin) {
-      next();
-    } else {
-      res.status(401).json({ message: "Unauthorized" });
-    }
+    if (req.session.isAdmin) return next();
+    res.status(401).json({ message: "Unauthorized" });
   };
 
-  // Health endpoint (no auth) so you can quickly verify Render + DB.
-  // Returns { ok:true, db:true/false }
+  // ✅ Health: echter DB Ping (nicht storage.getSettings)
   app.get("/api/health", async (_req, res) => {
     try {
-      // lightweight DB probe
-      await storage.getSettings();
+      // Drizzle execute raw SQL ping
+      await db.execute("select 1");
       res.json({ ok: true, db: true });
-    } catch (e) {
-      res.json({ ok: true, db: false });
+    } catch (e: any) {
+      res.json({ ok: true, db: false, error: String(e?.message ?? e) });
     }
   });
 
-  // === AUTH ROUTES ===
+  // AUTH
   app.post(api.auth.login.path, async (req, res) => {
     const { email, password } = api.auth.login.input.parse(req.body);
 
-    // Check against ENV variables as requested
     if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
       req.session.isAdmin = true;
       req.session.userEmail = email;
@@ -78,20 +64,15 @@ export async function registerRoutes(
   });
 
   app.post(api.auth.logout.path, (req, res) => {
-    req.session.destroy(() => {
-      res.json({ message: "Logged out" });
-    });
+    req.session.destroy(() => res.json({ message: "Logged out" }));
   });
 
   app.get(api.auth.me.path, (req, res) => {
-    if (req.session.isAdmin) {
-      res.json({ email: req.session.userEmail });
-    } else {
-      res.status(401).json({ message: "Unauthorized" });
-    }
+    if (req.session.isAdmin) return res.json({ email: req.session.userEmail });
+    res.status(401).json({ message: "Unauthorized" });
   });
 
-  // Protect all API routes below
+  // Protect all other /api routes
   app.use("/api", (req, res, next) => {
     if (req.path === "/login" || req.path === "/logout" || req.path === "/me" || req.path === "/health") {
       return next();
@@ -99,7 +80,7 @@ export async function registerRoutes(
     requireAuth(req, res, next);
   });
 
-  // === PROPERTY MANAGERS ===
+  // PROPERTY MANAGERS
   app.get(api.propertyManagers.list.path, async (_req, res) => {
     const data = await storage.getPropertyManagers();
     res.json(data);
@@ -122,7 +103,7 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
-  // === PRIVATE CUSTOMERS ===
+  // PRIVATE CUSTOMERS
   app.get(api.privateCustomers.list.path, async (_req, res) => {
     const data = await storage.getPrivateCustomers();
     res.json(data);
@@ -145,7 +126,7 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
-  // === COMPANIES ===
+  // COMPANIES
   app.get(api.companies.list.path, async (_req, res) => {
     const data = await storage.getCompanies();
     res.json(data);
@@ -168,7 +149,7 @@ export async function registerRoutes(
     res.status(204).send();
   });
 
-  // === JOBS ===
+  // JOBS
   app.get(api.jobs.list.path, async (_req, res) => {
     const data = await storage.getJobs();
     res.json(data);
@@ -196,14 +177,14 @@ export async function registerRoutes(
     const job = await storage.getJob(Number(req.params.id));
     if (!job) return res.status(404).json({ message: "Job not found" });
 
-    const pdfBytes = await generateJobPdf(job, job.company, job.propertyManager, job.privateCustomer);
+    const pdfBytes = await generateJobPdf(job, (job as any).company, (job as any).propertyManager, (job as any).privateCustomer);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=job-${job.jobNumber}.pdf`);
+    res.setHeader("Content-Disposition", `attachment; filename=job-${(job as any).jobNumber}.pdf`);
     res.send(Buffer.from(pdfBytes));
   });
 
-  // ❌ EMAIL-FUNKTION DEAKTIVIERT (du wolltest keine automatischen E-Mails)
+  // EMAIL deaktiviert (du willst manuell)
   app.post(api.jobs.sendEmail.path, async (_req, res) => {
     res.status(501).json({
       success: false,
@@ -211,21 +192,19 @@ export async function registerRoutes(
     });
   });
 
-  // === INVOICES ===
+  // INVOICES
   app.get(api.invoices.list.path, async (_req, res) => {
     const data = await storage.getInvoices();
     res.json(data);
   });
 
-  // Monatliche Generierung (bestehend) – Preis angepasst: 49 EUR pro Job (NETTO)
+  // ✅ Generierung: 49€ pro erledigtem Job (Netto)
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
-    // monthYear is YYYY-MM
     const date = parseISO(`${monthYear}-01`);
     const start = startOfMonth(date);
     const end = endOfMonth(date);
 
-    // 1. Get all DONE jobs in range
     const doneJobs = await db
       .select()
       .from(jobs)
@@ -235,31 +214,25 @@ export async function registerRoutes(
       return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
     }
 
-    // 2. Check which ones are already invoiced
     const existingItems = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
     const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
 
     const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
-
     if (jobsToInvoice.length === 0) {
       return res.json({ generatedCount: 0, message: "All done jobs for this month are already invoiced" });
     }
 
-    // 3. Group by company
     const jobsByCompany = new Map<number, typeof jobsToInvoice>();
     for (const job of jobsToInvoice) {
-      if (!jobsByCompany.has(job.companyId)) {
-        jobsByCompany.set(job.companyId, []);
-      }
-      jobsByCompany.get(job.companyId)?.push(job);
+      if (!jobsByCompany.has(job.companyId)) jobsByCompany.set(job.companyId, []);
+      jobsByCompany.get(job.companyId)!.push(job);
     }
 
-    // 4. Create Invoices
     let generatedCount = 0;
-    const PRICE_PER_JOB_NET = 49; // ✅ angepasst
+    const PRICE_PER_JOB_NET = 49;
 
     for (const [companyId, companyJobs] of jobsByCompany.entries()) {
-      const totalAmount = companyJobs.length * PRICE_PER_JOB_NET; // netto
+      const totalAmount = companyJobs.length * PRICE_PER_JOB_NET;
       const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
 
       await storage.createInvoice(
@@ -268,11 +241,11 @@ export async function registerRoutes(
           monthYear,
           companyId,
           status: "unpaid",
-          totalAmount: totalAmount.toString(), // weiterhin wie dein Schema es erwartet
+          totalAmount: totalAmount.toString(),
           createdAt: new Date(),
           sentAt: null,
           paidAt: null,
-        },
+        } as any,
         companyJobs.map((j) => ({ jobId: j.id, amount: PRICE_PER_JOB_NET }))
       );
 
@@ -286,7 +259,7 @@ export async function registerRoutes(
     const data = await storage.updateInvoice(Number(req.params.id), {
       status: "paid",
       paidAt: new Date(),
-    });
+    } as any);
     res.json(data);
   });
 
@@ -294,20 +267,19 @@ export async function registerRoutes(
     const invoice = await storage.getInvoice(Number(req.params.id));
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
-    // get items with job details
-    const items = invoice.items.map((item) => ({
+    const items = (invoice as any).items.map((item: any) => ({
       ...item,
-      job: (item as any).job, // populated in storage.getInvoice
+      job: item.job,
     }));
 
-    const pdfBytes = await generateInvoicePdf(invoice, invoice.company, items);
+    const pdfBytes = await generateInvoicePdf(invoice as any, (invoice as any).company, items);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=invoice-${invoice.invoiceNumber}.pdf`);
+    res.setHeader("Content-Disposition", `attachment; filename=invoice-${(invoice as any).invoiceNumber}.pdf`);
     res.send(Buffer.from(pdfBytes));
   });
 
-  // ❌ EMAIL-FUNKTION DEAKTIVIERT (du wolltest keine automatischen E-Mails)
+  // EMAIL deaktiviert (du willst manuell)
   app.post(api.invoices.sendEmail.path, async (_req, res) => {
     res.status(501).json({
       success: false,
@@ -315,7 +287,7 @@ export async function registerRoutes(
     });
   });
 
-  // === STATS ===
+  // STATS
   app.get(api.stats.dashboard.path, async (_req, res) => {
     const data = await storage.getStats();
     res.json(data);

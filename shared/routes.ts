@@ -200,7 +200,7 @@ export const api = {
       method: 'POST' as const,
       path: '/api/jobs/:id/pdf',
       responses: {
-        200: z.any(), // Binary PDF
+        200: z.any(),
       }
     },
     sendEmail: {
@@ -238,7 +238,7 @@ export const api = {
       method: 'POST' as const,
       path: '/api/invoices/:id/pdf',
       responses: {
-        200: z.any(), // Binary PDF
+        200: z.any(),
       }
     },
     sendEmail: {

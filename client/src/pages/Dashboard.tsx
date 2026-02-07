@@ -1,31 +1,39 @@
 import { useStats } from "@/hooks/use-stats";
+import { useGenerateInvoices } from "@/hooks/use-invoices";
 import { StatsCard } from "@/components/StatsCard";
-import { Briefcase, CheckCircle, FileText, TrendingUp, AlertCircle, Building2, HardHat } from "lucide-react";
+import { Briefcase, CheckCircle, FileText, TrendingUp, AlertCircle, Building2, HardHat, Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  Cell
-} from 'recharts';
+import { useLocation } from "wouter";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { useState } from "react";
+import { useToast } from "@/hooks/use-toast";
+import { format } from "date-fns";
 
 export default function Dashboard() {
   const { data: stats, isLoading } = useStats();
+  const [, setLocation] = useLocation();
+  const { toast } = useToast();
 
-  // Mock chart data - in a real app this would come from the API
-  const chartData = [
-    { name: 'Jan', revenue: 4000 },
-    { name: 'Feb', revenue: 3000 },
-    { name: 'Mär', revenue: 2000 },
-    { name: 'Apr', revenue: 2780 },
-    { name: 'Mai', revenue: 1890 },
-    { name: 'Jun', revenue: 2390 },
-    { name: 'Jul', revenue: 3490 },
-  ];
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [monthYear, setMonthYear] = useState(format(new Date(), "yyyy-MM"));
+  const { mutateAsync: generateInvoices, isPending: isGenerating } = useGenerateInvoices();
+
+  const runGenerate = async () => {
+    try {
+      const res = await generateInvoices(monthYear);
+      toast({ title: "Erfolg", description: `${res.generatedCount} Rechnungen generiert.` });
+      setInvoiceOpen(false);
+      setLocation("/invoices");
+    } catch (e: any) {
+      toast({
+        title: "Fehler",
+        description: String(e?.message ?? e),
+        variant: "destructive",
+      });
+    }
+  };
 
   if (isLoading) {
     return (
@@ -74,70 +82,79 @@ export default function Dashboard() {
         />
         <StatsCard
           title="Monatsumsatz"
-          value={`€ ${stats?.monthlyRevenue.toLocaleString('de-AT')}`}
+          value={`€ ${(stats?.monthlyRevenue ?? 0).toLocaleString("de-AT")}`}
           icon={TrendingUp}
           description="Geschätzter Umsatz"
           color="blue"
         />
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <div className="p-6 bg-white rounded-2xl shadow-sm border border-border/50">
-          <h3 className="text-lg font-bold mb-6 font-display">Umsatzentwicklung</h3>
-          <div className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b'}} />
-                <YAxis axisLine={false} tickLine={false} tick={{fill: '#64748b'}} />
-                <Tooltip 
-                  cursor={{fill: '#f1f5f9'}}
-                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                />
-                <Bar dataKey="revenue" radius={[4, 4, 0, 0]}>
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill="hsl(var(--primary))" fillOpacity={0.8} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+      <div className="p-6 bg-white rounded-2xl shadow-sm border border-border/50">
+        <h3 className="text-lg font-bold mb-4 font-display">Schnellzugriff</h3>
 
-        <div className="p-6 bg-white rounded-2xl shadow-sm border border-border/50">
-          <h3 className="text-lg font-bold mb-4 font-display">Schnellzugriff</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <button className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group">
-              <div className="bg-blue-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                <Briefcase className="w-5 h-5 text-blue-600" />
-              </div>
-              <div className="font-semibold text-slate-900">Neuer Einsatz</div>
-              <div className="text-sm text-slate-500 mt-1">Einsatz erfassen & zuweisen</div>
-            </button>
-            <button className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group">
-              <div className="bg-purple-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                <FileText className="w-5 h-5 text-purple-600" />
-              </div>
-              <div className="font-semibold text-slate-900">Rechnungen</div>
-              <div className="text-sm text-slate-500 mt-1">Für diesen Monat generieren</div>
-            </button>
-            <button className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group">
-              <div className="bg-green-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                <Building2 className="w-5 h-5 text-green-600" />
-              </div>
-              <div className="font-semibold text-slate-900">Neue HV</div>
-              <div className="text-sm text-slate-500 mt-1">Hausverwaltung anlegen</div>
-            </button>
-            <button className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group">
-              <div className="bg-orange-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                <HardHat className="w-5 h-5 text-orange-600" />
-              </div>
-              <div className="font-semibold text-slate-900">Neuer Betrieb</div>
-              <div className="text-sm text-slate-500 mt-1">Partnerfirma hinzufügen</div>
-            </button>
-          </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <button
+            onClick={() => setLocation("/jobs")}
+            className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group"
+          >
+            <div className="bg-blue-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <Briefcase className="w-5 h-5 text-blue-600" />
+            </div>
+            <div className="font-semibold text-slate-900">Einsätze</div>
+            <div className="text-sm text-slate-500 mt-1">Einsatz erfassen & zuweisen</div>
+          </button>
+
+          <button
+            onClick={() => setInvoiceOpen(true)}
+            className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group"
+          >
+            <div className="bg-purple-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <FileText className="w-5 h-5 text-purple-600" />
+            </div>
+            <div className="font-semibold text-slate-900">Rechnungen</div>
+            <div className="text-sm text-slate-500 mt-1">Monat wählen & generieren</div>
+          </button>
+
+          <button
+            onClick={() => setLocation("/property-managers")}
+            className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group"
+          >
+            <div className="bg-green-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <Building2 className="w-5 h-5 text-green-600" />
+            </div>
+            <div className="font-semibold text-slate-900">Hausverwaltungen</div>
+            <div className="text-sm text-slate-500 mt-1">HV anlegen & verwalten</div>
+          </button>
+
+          <button
+            onClick={() => setLocation("/companies")}
+            className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:shadow-md hover:border-primary/20 transition-all text-left group"
+          >
+            <div className="bg-orange-100 w-10 h-10 rounded-lg flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <HardHat className="w-5 h-5 text-orange-600" />
+            </div>
+            <div className="font-semibold text-slate-900">Betriebe</div>
+            <div className="text-sm text-slate-500 mt-1">Partnerfirma hinzufügen</div>
+          </button>
         </div>
       </div>
+
+      <Dialog open={invoiceOpen} onOpenChange={setInvoiceOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rechnungen generieren</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <label className="text-sm font-semibold text-slate-700">Abrechnungsmonat</label>
+            <Input type="month" value={monthYear} onChange={(e) => setMonthYear(e.target.value)} />
+            <Button onClick={runGenerate} disabled={isGenerating} className="w-full">
+              {isGenerating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Generieren
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

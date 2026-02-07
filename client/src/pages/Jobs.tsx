@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,11 +16,45 @@ import { useJobs, useCreateJob, useUpdateJob } from "@/hooks/use-jobs";
 import { useCompanies } from "@/hooks/use-companies";
 import { usePropertyManagers } from "@/hooks/use-property-managers";
 import { usePrivateCustomers } from "@/hooks/use-private-customers";
+import { useLocation } from "wouter";
 
 function statusBadge(status: string) {
   if (status === "done") return <Badge className="bg-green-600">Erledigt</Badge>;
   if (status === "canceled") return <Badge variant="destructive">Storniert</Badge>;
-  return <Badge variant="outline" className="text-orange-600 border-orange-200 bg-orange-50">Offen</Badge>;
+  return (
+    <Badge variant="outline" className="text-orange-600 border-orange-200 bg-orange-50">
+      Offen
+    </Badge>
+  );
+}
+
+function toDateTimeLocalValue(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+function fromDateTimeLocalValue(v: string) {
+  return new Date(v);
+}
+
+function getStatusFromUrl(): "all" | "open" | "done" | "canceled" {
+  const params = new URLSearchParams(window.location.search);
+  const s = (params.get("status") || "all").toLowerCase();
+  if (s === "open" || s === "done" || s === "canceled") return s;
+  return "all";
+}
+
+function setStatusInUrl(setLocation: (path: string) => void, status: string) {
+  const params = new URLSearchParams(window.location.search);
+  if (status === "all") params.delete("status");
+  else params.set("status", status);
+  const qs = params.toString();
+  setLocation(qs ? `/jobs?${qs}` : "/jobs");
 }
 
 export default function Jobs() {
@@ -29,50 +63,119 @@ export default function Jobs() {
   const { data: managers } = usePropertyManagers();
   const { data: customers } = usePrivateCustomers();
 
+  const { toast } = useToast();
+  const [, setLocation] = useLocation();
+
   const [isOpen, setIsOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
 
-  const columns = [
-    { header: "Job#", accessorKey: "jobNumber", className: "font-mono font-bold" },
-    { header: "Datum", accessorKey: "dateTime", cell: (j: any) => (j.dateTime ? new Date(j.dateTime).toLocaleString("de-AT") : "") },
-    { header: "Adresse", accessorKey: "serviceAddress" },
-    { header: "Gewerk", accessorKey: "trade" },
-    { header: "Firma", accessorKey: "company.companyName", cell: (j: any) => j.company?.companyName ?? "" },
-    {
-      header: "Kunde",
-      accessorKey: "customerType",
-      cell: (j: any) =>
-        j.customerType === "property_manager"
-          ? (j.propertyManager?.name ?? "HV")
-          : (j.privateCustomer?.name ?? "Privat"),
-    },
-    { header: "Status", accessorKey: "status", cell: (j: any) => statusBadge(j.status) },
-    {
-      header: "Aktionen",
-      cell: (j: any) => (
-        <Button
-          variant="link"
-          onClick={() => {
-            setEditingItem(j);
-            setIsOpen(true);
-          }}
-        >
-          Bearbeiten
-        </Button>
-      ),
-    },
-  ];
+  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "done" | "canceled">(getStatusFromUrl());
+
+  // sync URL -> state wenn direkt aus Dashboard kommt
+  useEffect(() => {
+    const onPop = () => setStatusFilter(getStatusFromUrl());
+    window.addEventListener("popstate", onPop);
+    // initial
+    setStatusFilter(getStatusFromUrl());
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const counts = useMemo(() => {
+    const all = jobs || [];
+    const open = all.filter((j: any) => j.status === "open").length;
+    const done = all.filter((j: any) => j.status === "done").length;
+    const canceled = all.filter((j: any) => j.status === "canceled").length;
+    return { open, done, canceled, all: all.length };
+  }, [jobs]);
+
+  const filteredJobs = useMemo(() => {
+    const all = jobs || [];
+    if (statusFilter === "all") return all;
+    return all.filter((j: any) => j.status === statusFilter);
+  }, [jobs, statusFilter]);
+
+  const columns = useMemo(
+    () => [
+      { header: "Job#", accessorKey: "jobNumber", className: "font-mono font-bold" },
+      {
+        header: "Datum",
+        accessorKey: "dateTime",
+        cell: (j: any) => (j.dateTime ? new Date(j.dateTime).toLocaleString("de-AT") : ""),
+      },
+      { header: "Adresse", accessorKey: "serviceAddress" },
+      { header: "Gewerk", accessorKey: "trade" },
+      { header: "Tätigkeit", accessorKey: "activity" },
+      { header: "Firma", accessorKey: "company.companyName", cell: (j: any) => j.company?.companyName ?? "" },
+      {
+        header: "Kunde",
+        accessorKey: "customerType",
+        cell: (j: any) =>
+          j.customerType === "property_manager"
+            ? j.propertyManager?.name ?? "Hausverwaltung"
+            : j.privateCustomer?.name ?? "Privatkunde",
+      },
+      { header: "Status", accessorKey: "status", cell: (j: any) => statusBadge(j.status) },
+      {
+        header: "Aktionen",
+        cell: (j: any) => (
+          <Button
+            variant="link"
+            onClick={() => {
+              setEditingItem(j);
+              setIsOpen(true);
+            }}
+          >
+            Bearbeiten
+          </Button>
+        ),
+      },
+    ],
+    []
+  );
+
+  const setFilter = (s: "all" | "open" | "done" | "canceled") => {
+    setStatusFilter(s);
+    setStatusInUrl(setLocation, s);
+  };
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h2 className="text-3xl font-display font-bold text-slate-900">Einsätze</h2>
-        <p className="text-slate-500 mt-2">Einsätze erfassen, suchen und dokumentieren</p>
+    <div className="space-y-6">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-3xl font-display font-bold text-slate-900">Einsätze</h2>
+          <p className="text-slate-500 mt-2">
+            Übersicht + Suche. Filter: <span className="font-semibold">{statusFilter}</span>
+          </p>
+        </div>
+
+        <div className="flex gap-2 flex-wrap">
+          <Button variant={statusFilter === "all" ? "default" : "outline"} onClick={() => setFilter("all")}>
+            Alle ({counts.all})
+          </Button>
+          <Button variant={statusFilter === "open" ? "default" : "outline"} onClick={() => setFilter("open")}>
+            Offen ({counts.open})
+          </Button>
+          <Button variant={statusFilter === "done" ? "default" : "outline"} onClick={() => setFilter("done")}>
+            Erledigt ({counts.done})
+          </Button>
+          <Button variant={statusFilter === "canceled" ? "default" : "outline"} onClick={() => setFilter("canceled")}>
+            Storniert ({counts.canceled})
+          </Button>
+
+          <Button
+            onClick={() => {
+              setEditingItem(null);
+              setIsOpen(true);
+            }}
+          >
+            Neuer Einsatz
+          </Button>
+        </div>
       </div>
 
       <DataTable
-        data={jobs || []}
-        columns={columns}
+        data={filteredJobs}
+        columns={columns as any}
         searchKeys={[
           "jobNumber",
           "dateTime",
@@ -81,6 +184,7 @@ export default function Jobs() {
           "activity",
           "status",
           "reportText",
+
           "company.companyName",
           "company.contactName",
           "company.phone",
@@ -88,11 +192,13 @@ export default function Jobs() {
           "company.address",
           "company.trades",
           "company.notes",
+
           "propertyManager.name",
           "propertyManager.address",
           "propertyManager.phone",
           "propertyManager.email",
           "propertyManager.notes",
+
           "privateCustomer.name",
           "privateCustomer.address",
           "privateCustomer.phone",
@@ -100,21 +206,20 @@ export default function Jobs() {
           "privateCustomer.notes",
         ]}
         searchPlaceholder="Suche: Adresse, Gewerk, Firma, Kunde, Telefon, Email, Status, Bericht, Notes..."
-        createLabel="Neuer Einsatz"
-        onCreate={() => {
-          setEditingItem(null);
-          setIsOpen(true);
-        }}
         isLoading={isLoading}
       />
 
       <JobDialog
         open={isOpen}
-        onOpenChange={setIsOpen}
+        onOpenChange={(o) => {
+          setIsOpen(o);
+          if (!o) setEditingItem(null);
+        }}
         item={editingItem}
         companies={companies || []}
         managers={managers || []}
         customers={customers || []}
+        onSaved={() => toast({ title: "Gespeichert" })}
       />
     </div>
   );
@@ -127,6 +232,7 @@ function JobDialog({
   companies,
   managers,
   customers,
+  onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -134,6 +240,7 @@ function JobDialog({
   companies: any[];
   managers: any[];
   customers: any[];
+  onSaved?: () => void;
 }) {
   const { toast } = useToast();
   const { mutateAsync: create } = useCreateJob();
@@ -141,33 +248,59 @@ function JobDialog({
 
   const form = useForm({
     resolver: zodResolver(api.jobs.create.input),
-    defaultValues: item || {
+    defaultValues: {
       dateTime: new Date(),
       customerType: "property_manager",
-      propertyManagerId: undefined,
-      privateCustomerId: undefined,
+      propertyManagerId: undefined as any,
+      privateCustomerId: undefined as any,
       serviceAddress: "",
-      companyId: undefined,
+      companyId: undefined as any,
       trade: "Installateur",
       activity: "",
       status: "open",
       reportText: "",
       referralFee: "49",
     },
-    values: item
-      ? {
-          ...item,
-          dateTime: item.dateTime ? new Date(item.dateTime) : new Date(),
-          referralFee: item.referralFee ?? "49",
-        }
-      : undefined,
   });
+
+  useEffect(() => {
+    if (!open) return;
+
+    if (item) {
+      form.reset({
+        dateTime: item.dateTime ? new Date(item.dateTime) : new Date(),
+        customerType: item.customerType ?? "property_manager",
+        propertyManagerId: item.propertyManagerId ?? undefined,
+        privateCustomerId: item.privateCustomerId ?? undefined,
+        serviceAddress: item.serviceAddress ?? "",
+        companyId: item.companyId ?? undefined,
+        trade: item.trade ?? "Installateur",
+        activity: item.activity ?? "",
+        status: item.status ?? "open",
+        reportText: item.reportText ?? "",
+        referralFee: item.referralFee ?? "49",
+      });
+    } else {
+      form.reset({
+        dateTime: new Date(),
+        customerType: "property_manager",
+        propertyManagerId: undefined,
+        privateCustomerId: undefined,
+        serviceAddress: "",
+        companyId: undefined,
+        trade: "Installateur",
+        activity: "",
+        status: "open",
+        reportText: "",
+        referralFee: "49",
+      });
+    }
+  }, [open, item, form]);
 
   const customerType = form.watch("customerType");
 
   async function onSubmit(data: any) {
     try {
-      // Minimal-Logik: nur 1 Kundentyp darf gesetzt sein
       if (data.customerType === "property_manager") {
         data.privateCustomerId = null;
         if (!data.propertyManagerId) throw new Error("Bitte Hausverwaltung auswählen.");
@@ -177,17 +310,16 @@ function JobDialog({
       }
 
       if (!data.companyId) throw new Error("Bitte Betrieb auswählen.");
+      if (!data.serviceAddress || String(data.serviceAddress).trim().length < 3) throw new Error("Bitte Einsatzadresse eingeben.");
+      if (!data.trade) throw new Error("Bitte Gewerk wählen.");
+      if (!data.activity || String(data.activity).trim().length < 3) throw new Error("Bitte Tätigkeit / Problem eingeben.");
+      if (!(data.dateTime instanceof Date)) data.dateTime = new Date(data.dateTime);
 
-      if (item) {
-        await update({ id: item.id, ...data });
-        toast({ title: "Aktualisiert" });
-      } else {
-        await create(data);
-        toast({ title: "Erstellt" });
-      }
+      if (item?.id) await update({ id: item.id, ...data });
+      else await create(data);
 
       onOpenChange(false);
-      form.reset();
+      onSaved?.();
     } catch (e: any) {
       toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
       console.error(e);
@@ -213,8 +345,8 @@ function JobDialog({
                     <FormControl>
                       <Input
                         type="datetime-local"
-                        value={field.value ? new Date(field.value).toISOString().slice(0, 16) : ""}
-                        onChange={(e) => field.onChange(new Date(e.target.value))}
+                        value={field.value ? toDateTimeLocalValue(new Date(field.value)) : ""}
+                        onChange={(e) => field.onChange(fromDateTimeLocalValue(e.target.value))}
                       />
                     </FormControl>
                     <FormMessage />
@@ -291,19 +423,16 @@ function JobDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Betrieb</FormLabel>
-                    <Select
-                      value={field.value ? String(field.value) : ""}
-                      onValueChange={(v) => field.onChange(Number(v))}
-                    >
+                    <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
                       <FormControl>
                         <SelectTrigger>
                           <SelectValue placeholder="Betrieb auswählen" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {companies.map((c) => (
+                        {(companies || []).map((c) => (
                           <SelectItem key={c.id} value={String(c.id)}>
-                            {c.companyName} ({(c.trades || []).join(", ")})
+                            {c.companyName}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -344,17 +473,14 @@ function JobDialog({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Hausverwaltung</FormLabel>
-                      <Select
-                        value={field.value ? String(field.value) : ""}
-                        onValueChange={(v) => field.onChange(Number(v))}
-                      >
+                      <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
                         <FormControl>
                           <SelectTrigger>
                             <SelectValue placeholder="HV auswählen" />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          {managers.map((m) => (
+                          {(managers || []).map((m) => (
                             <SelectItem key={m.id} value={String(m.id)}>
                               {m.name} — {m.phone}
                             </SelectItem>
@@ -372,17 +498,14 @@ function JobDialog({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Privatkunde</FormLabel>
-                      <Select
-                        value={field.value ? String(field.value) : ""}
-                        onValueChange={(v) => field.onChange(Number(v))}
-                      >
+                      <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
                         <FormControl>
                           <SelectTrigger>
                             <SelectValue placeholder="Privatkunde auswählen" />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          {customers.map((c) => (
+                          {(customers || []).map((c) => (
                             <SelectItem key={c.id} value={String(c.id)}>
                               {c.name} — {c.phone}
                             </SelectItem>
@@ -403,7 +526,7 @@ function JobDialog({
                 <FormItem>
                   <FormLabel>Tätigkeit / Problem</FormLabel>
                   <FormControl>
-                    <Textarea rows={3} {...field} placeholder="z.B. Wasserrohrbruch, Sicherung fliegt, ..." />
+                    <Textarea rows={3} {...field} placeholder="z.B. Wasserrohrbruch, Sicherung fliegt..." />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -417,7 +540,7 @@ function JobDialog({
                 <FormItem>
                   <FormLabel>Bericht / Dokumentation</FormLabel>
                   <FormControl>
-                    <Textarea rows={4} {...field} placeholder="Was wurde gemacht? Ergebnis? Material? ..." />
+                    <Textarea rows={4} {...field} placeholder="Was wurde gemacht? Ergebnis?..." />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

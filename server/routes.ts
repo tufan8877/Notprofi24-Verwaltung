@@ -2,6 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
 import session from "express-session";
 import MemoryStore from "memorystore";
+import { ZodError } from "zod";
 import { api } from "@shared/routes";
 import { storage } from "./storage";
 import { db } from "./db";
@@ -12,7 +13,6 @@ import { and, eq, between, sql } from "drizzle-orm";
 
 const SessionStore = MemoryStore(session);
 
-// Session Types
 declare module "express-session" {
   interface SessionData {
     isAdmin: boolean;
@@ -20,7 +20,7 @@ declare module "express-session" {
   }
 }
 
-// ✅ Helper: Requests dürfen nicht unendlich hängen
+// --- Helpers ---
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let t: NodeJS.Timeout;
   const timeout = new Promise<never>((_, rej) => {
@@ -29,7 +29,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(t!)) as Promise<T>;
 }
 
-// ✅ Helper: Async handler wrapper → gibt JSON Fehler statt „hängt“
 function asyncHandler(fn: (req: Request, res: Response) => Promise<any>) {
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res).catch(next);
@@ -52,13 +51,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // Auth Middleware
   const requireAuth = (req: Request, res: Response, next: NextFunction) => {
     if (req.session.isAdmin) return next();
     res.status(401).json({ message: "Unauthorized" });
   };
 
-  // ✅ HEALTH: echter DB Ping + Timeout + Klartext
+  // Health
   app.get(
     "/api/health",
     asyncHandler(async (_req, res) => {
@@ -66,18 +64,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await withTimeout(db.execute(sql`select 1`), 8000, "db select 1");
         res.json({ ok: true, db: true });
       } catch (e: any) {
-        res.status(200).json({ ok: true, db: false, error: String(e?.message ?? e) });
+        res.json({ ok: true, db: false, error: String(e?.message ?? e) });
       }
     })
   );
 
-  // ✅ DIAGNOSE: zeigt ob Tabellen existieren (oder welcher Fehler kommt)
+  // Diagnose (zeigt Tabellen)
   app.get(
     "/api/diagnose",
     asyncHandler(async (_req, res) => {
       try {
         await withTimeout(db.execute(sql`select 1`), 8000, "db ping");
-        // Prüfen ob Tabellen existieren
         const tables = await withTimeout(
           db.execute(sql`
             select table_name
@@ -90,7 +87,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         );
         res.json({ ok: true, tables });
       } catch (e: any) {
-        res.status(200).json({ ok: false, error: String(e?.message ?? e) });
+        res.json({ ok: false, error: String(e?.message ?? e) });
       }
     })
   );
@@ -120,7 +117,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(401).json({ message: "Unauthorized" });
   });
 
-  // Protect /api
+  // Protect all /api routes except auth + health/diagnose
   app.use("/api", (req, res, next) => {
     if (
       req.path === "/login" ||
@@ -134,7 +131,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     requireAuth(req, res, next);
   });
 
-  // PROPERTY MANAGERS
+  // PROPERTY MANAGERS (Hausverwaltungen)
   app.get(
     api.propertyManagers.list.path,
     asyncHandler(async (_req, res) => {
@@ -310,7 +307,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // ✅ Monatsabrechnung: 49€ netto pro erledigtem Job
   app.post(
     api.invoices.generate.path,
     asyncHandler(async (req, res) => {
@@ -320,29 +316,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const end = endOfMonth(date);
 
       const doneJobs = await withTimeout(
-        db
-          .select()
-          .from(jobs)
-          .where(and(eq(jobs.status, "done"), between(jobs.dateTime, start, end))),
+        db.select().from(jobs).where(and(eq(jobs.status, "done"), between(jobs.dateTime, start, end))),
         15000,
         "select done jobs"
       );
 
-      if (doneJobs.length === 0) {
-        return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
-      }
+      if (doneJobs.length === 0) return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
 
-      const existingItems = await withTimeout(
-        db.select({ jobId: invoiceItems.jobId }).from(invoiceItems),
-        15000,
-        "select invoice items"
-      );
+      const existingItems = await withTimeout(db.select({ jobId: invoiceItems.jobId }).from(invoiceItems), 15000, "select invoice items");
       const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
       const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
 
-      if (jobsToInvoice.length === 0) {
-        return res.json({ generatedCount: 0, message: "All done jobs for this month are already invoiced" });
-      }
+      if (jobsToInvoice.length === 0) return res.json({ generatedCount: 0, message: "All done jobs for this month are already invoiced" });
 
       const jobsByCompany = new Map<number, typeof jobsToInvoice>();
       for (const job of jobsToInvoice) {
@@ -385,11 +370,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post(
     api.invoices.markPaid.path,
     asyncHandler(async (req, res) => {
-      const data = await withTimeout(
-        storage.updateInvoice(Number(req.params.id), { status: "paid", paidAt: new Date() } as any),
-        12000,
-        "markPaid"
-      );
+      const data = await withTimeout(storage.updateInvoice(Number(req.params.id), { status: "paid", paidAt: new Date() } as any), 12000, "markPaid");
       res.json(data);
     })
   );
@@ -401,11 +382,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
       const items = (invoice as any).items.map((it: any) => ({ ...it, job: it.job }));
-      const pdfBytes = await withTimeout(
-        generateInvoicePdf(invoice as any, (invoice as any).company, items),
-        15000,
-        "generateInvoicePdf"
-      );
+      const pdfBytes = await withTimeout(generateInvoicePdf(invoice as any, (invoice as any).company, items), 15000, "generateInvoicePdf");
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename=invoice-${(invoice as any).invoiceNumber}.pdf`);
@@ -413,7 +390,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // EMAIL deaktiviert
   app.post(api.invoices.sendEmail.path, (_req, res) => {
     res.status(501).json({
       success: false,
@@ -421,7 +397,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
-  // STATS
   app.get(
     api.stats.dashboard.path,
     asyncHandler(async (_req, res) => {
@@ -430,11 +405,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // ✅ Globaler Error Handler → Frontend sieht Fehler statt endlos loading
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    console.error("[API ERROR]", err);
-    const message = String(err?.message ?? err);
-    res.status(500).json({ message: "Server error", error: message });
+  // ✅ Global Error Handler: ZodError -> 400 + Details, DB Fehler -> 500
+  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+    console.error("\n[API ERROR]");
+    console.error("PATH:", req.method, req.originalUrl);
+    console.error("BODY:", req.body);
+    console.error(err);
+
+    if (err instanceof ZodError) {
+      return res.status(400).json({
+        message: "Validation error",
+        issues: err.issues,
+      });
+    }
+
+    const msg = String(err?.message ?? err);
+    return res.status(500).json({
+      message: "Server error",
+      error: msg,
+    });
   });
 
   return httpServer;

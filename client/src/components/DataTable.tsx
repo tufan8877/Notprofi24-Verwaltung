@@ -1,3 +1,4 @@
+import React, { useMemo, useState } from "react";
 import {
   Table,
   TableBody,
@@ -9,7 +10,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Search, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
 import { cn } from "@/lib/utils";
 
 interface Column<T> {
@@ -22,17 +22,46 @@ interface Column<T> {
 interface DataTableProps<T> {
   data: T[];
   columns: Column<T>[];
+
+  // ALT (bleibt kompatibel)
   searchKey?: keyof T;
+
+  // NEU: Mehrere Felder + Deep Paths: "company.companyName"
+  searchKeys?: string[];
+
   searchPlaceholder?: string;
   onCreate?: () => void;
   createLabel?: string;
   isLoading?: boolean;
 }
 
+function getByPath(obj: any, path: string) {
+  if (!obj) return undefined;
+  if (!path) return undefined;
+  const parts = path.split(".");
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    cur = cur[p];
+  }
+  return cur;
+}
+
+function normalizeValue(v: any): string {
+  if (v == null) return "";
+  if (Array.isArray(v)) return v.map(normalizeValue).join(" ");
+  if (typeof v === "object") {
+    // wenn es ein Date-String ist, bleibt es String
+    return Object.values(v).map(normalizeValue).join(" ");
+  }
+  return String(v);
+}
+
 export function DataTable<T extends { id: number | string }>({
   data,
   columns,
   searchKey,
+  searchKeys,
   searchPlaceholder = "Suchen...",
   onCreate,
   createLabel = "Neu erstellen",
@@ -40,17 +69,34 @@ export function DataTable<T extends { id: number | string }>({
 }: DataTableProps<T>) {
   const [searchTerm, setSearchTerm] = useState("");
 
-  const filteredData = data.filter((item) => {
-    if (!searchKey) return true;
-    const value = item[searchKey];
-    return String(value).toLowerCase().includes(searchTerm.toLowerCase());
-  });
+  const effectiveSearchKeys = useMemo(() => {
+    if (searchKeys && searchKeys.length > 0) return searchKeys;
+    if (searchKey) return [String(searchKey)];
+    return [];
+  }, [searchKeys, searchKey]);
+
+  const filteredData = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return data;
+    if (effectiveSearchKeys.length === 0) return data;
+
+    return data.filter((item: any) => {
+      for (const key of effectiveSearchKeys) {
+        const val = getByPath(item, key);
+        const text = normalizeValue(val).toLowerCase();
+        if (text.includes(q)) return true;
+      }
+      return false;
+    });
+  }, [data, searchTerm, effectiveSearchKeys]);
+
+  const showSearch = effectiveSearchKeys.length > 0;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
-        {searchKey && (
-          <div className="relative w-full sm:w-72">
+        {showSearch && (
+          <div className="relative w-full sm:w-96">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder={searchPlaceholder}
@@ -60,9 +106,10 @@ export function DataTable<T extends { id: number | string }>({
             />
           </div>
         )}
+
         {onCreate && (
-          <Button 
-            onClick={onCreate} 
+          <Button
+            onClick={onCreate}
             className="w-full sm:w-auto rounded-xl shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:-translate-y-0.5 transition-all duration-200"
           >
             <Plus className="mr-2 h-4 w-4" />
@@ -82,14 +129,15 @@ export function DataTable<T extends { id: number | string }>({
               ))}
             </TableRow>
           </TableHeader>
+
           <TableBody>
             {isLoading ? (
               <TableRow>
                 <TableCell colSpan={columns.length} className="h-24 text-center">
                   <div className="flex justify-center items-center gap-2 text-muted-foreground">
-                    <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce [animation-delay:-0.3s]"></div>
-                    <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce [animation-delay:-0.15s]"></div>
-                    <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce"></div>
+                    <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce [animation-delay:-0.3s]" />
+                    <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce [animation-delay:-0.15s]" />
+                    <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" />
                   </div>
                 </TableCell>
               </TableRow>
@@ -100,11 +148,13 @@ export function DataTable<T extends { id: number | string }>({
                 </TableCell>
               </TableRow>
             ) : (
-              filteredData.map((item) => (
+              filteredData.map((item: any) => (
                 <TableRow key={item.id} className="hover:bg-slate-50/80 transition-colors">
                   {columns.map((col, idx) => (
                     <TableCell key={idx} className={cn("py-3", col.className)}>
-                      {col.cell ? col.cell(item) : String(item[col.accessorKey as keyof T] || "")}
+                      {col.cell
+                        ? col.cell(item)
+                        : String(item[col.accessorKey as keyof T] ?? "")}
                     </TableCell>
                   ))}
                 </TableRow>

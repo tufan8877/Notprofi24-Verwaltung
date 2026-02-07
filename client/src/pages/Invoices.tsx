@@ -20,8 +20,8 @@ export default function Invoices() {
     try {
       const res = await generate(selectedMonth);
       toast({ title: "Erfolg", description: `${res.generatedCount} Rechnungen generiert.` });
-    } catch (e) {
-      toast({ title: "Fehler", variant: "destructive" });
+    } catch (e: any) {
+      toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
     }
   };
 
@@ -29,8 +29,8 @@ export default function Invoices() {
     try {
       await markPaid(id);
       toast({ title: "Bezahlt", description: "Rechnung als bezahlt markiert." });
-    } catch (e) {
-      toast({ title: "Fehler", variant: "destructive" });
+    } catch (e: any) {
+      toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
     }
   };
 
@@ -43,8 +43,11 @@ export default function Invoices() {
       header: "Status",
       accessorKey: "status",
       cell: (item: any) => (
-        <Badge variant={item.status === 'paid' ? 'default' : 'outline'} className={item.status === 'paid' ? 'bg-green-600' : 'text-orange-600 border-orange-200 bg-orange-50'}>
-          {item.status === 'paid' ? "Bezahlt" : "Offen"}
+        <Badge
+          variant={item.status === "paid" ? "default" : "outline"}
+          className={item.status === "paid" ? "bg-green-600" : "text-orange-600 border-orange-200 bg-orange-50"}
+        >
+          {item.status === "paid" ? "Bezahlt" : "Offen"}
         </Badge>
       )
     },
@@ -52,10 +55,10 @@ export default function Invoices() {
       header: "Aktionen",
       cell: (item: any) => (
         <div className="flex gap-2">
-           <Button variant="ghost" size="icon" onClick={() => downloadPdf(item.id)} title="Download PDF">
+          <Button variant="ghost" size="icon" onClick={() => downloadPdf(item.id)} title="Download PDF">
             <Download className="h-4 w-4 text-slate-500" />
           </Button>
-          {item.status === 'unpaid' && (
+          {item.status === "unpaid" && (
             <Button variant="ghost" size="icon" onClick={() => handleMarkPaid(item.id)} title="Als bezahlt markieren">
               <CheckCircle className="h-4 w-4 text-green-600" />
             </Button>
@@ -75,28 +78,37 @@ export default function Invoices() {
           <h2 className="text-3xl font-display font-bold text-slate-900">Abrechnung</h2>
           <p className="text-slate-500 mt-2">Monatliche Provisionsabrechnungen für Partner</p>
         </div>
-        
+
         <div className="bg-white p-4 rounded-xl border border-border shadow-sm flex items-center gap-4">
-           <div className="space-y-1">
-             <label className="text-xs font-semibold text-muted-foreground uppercase">Abrechnungsmonat</label>
-             <Input 
-                type="month" 
-                value={selectedMonth} 
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                className="w-40 h-9"
-              />
-           </div>
-           <Button onClick={handleGenerate} disabled={isGenerating} className="h-9 mt-5">
-             {isGenerating ? <Loader2 className="animate-spin mr-2 h-4 w-4" /> : <FileText className="mr-2 h-4 w-4" />}
-             Generieren
-           </Button>
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-muted-foreground uppercase">Abrechnungsmonat</label>
+            <Input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="w-40 h-9"
+            />
+          </div>
+          <Button onClick={handleGenerate} disabled={isGenerating} className="h-9 mt-5">
+            {isGenerating ? <Loader2 className="animate-spin mr-2 h-4 w-4" /> : <FileText className="mr-2 h-4 w-4" />}
+            Generieren
+          </Button>
         </div>
       </div>
 
-      <DataTable 
-        data={invoices || []} 
-        columns={columns} 
-        searchKey="invoiceNumber"
+      <DataTable
+        data={invoices || []}
+        columns={columns}
+        searchKeys={[
+          "invoiceNumber",
+          "monthYear",
+          "status",
+          "totalAmount",
+          "company.companyName",
+          "company.phone",
+          "company.email",
+        ]}
+        searchPlaceholder="Suche: Rechnungsnr., Firma, Monat, Betrag, Status..."
         isLoading={isLoading}
       />
     </div>

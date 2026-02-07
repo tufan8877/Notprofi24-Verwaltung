@@ -1,108 +1,63 @@
+import { useState } from "react";
 import { DataTable } from "@/components/DataTable";
-import { useJobs, useCreateJob, useUpdateJob, useJobActions } from "@/hooks/use-jobs";
-import { useCompanies } from "@/hooks/use-companies";
-import { usePropertyManagers } from "@/hooks/use-property-managers";
-import { usePrivateCustomers } from "@/hooks/use-private-customers";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { format } from "date-fns";
-import { de } from "date-fns/locale";
-import { Eye, FileText, Mail, Check, X, Calendar as CalendarIcon, Loader2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { api } from "@shared/routes";
-import { useState } from "react";
-import { Calendar } from "@/components/ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
-import { useToast } from "@/hooks/use-toast";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+import { useJobs, useCreateJob, useUpdateJob } from "@/hooks/use-jobs";
+import { useCompanies } from "@/hooks/use-companies";
+import { usePropertyManagers } from "@/hooks/use-property-managers";
+import { usePrivateCustomers } from "@/hooks/use-private-customers";
+
+function statusBadge(status: string) {
+  if (status === "done") return <Badge className="bg-green-600">Erledigt</Badge>;
+  if (status === "canceled") return <Badge variant="destructive">Storniert</Badge>;
+  return <Badge variant="outline" className="text-orange-600 border-orange-200 bg-orange-50">Offen</Badge>;
+}
 
 export default function Jobs() {
   const { data: jobs, isLoading } = useJobs();
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [selectedJob, setSelectedJob] = useState<any>(null); // For detail view
+  const { data: companies } = useCompanies();
+  const { data: managers } = usePropertyManagers();
+  const { data: customers } = usePrivateCustomers();
+
+  const [isOpen, setIsOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<any>(null);
 
   const columns = [
-    {
-      header: "Job Nr.",
-      accessorKey: "jobNumber",
-      className: "font-mono font-bold text-slate-600",
-    },
-    {
-      header: "Datum",
-      accessorKey: "dateTime",
-      cell: (item: any) => format(new Date(item.dateTime), "dd.MM.yyyy HH:mm"),
-    },
+    { header: "Job#", accessorKey: "jobNumber", className: "font-mono font-bold" },
+    { header: "Datum", accessorKey: "dateTime", cell: (j: any) => (j.dateTime ? new Date(j.dateTime).toLocaleString("de-AT") : "") },
+    { header: "Adresse", accessorKey: "serviceAddress" },
+    { header: "Gewerk", accessorKey: "trade" },
+    { header: "Firma", accessorKey: "company.companyName", cell: (j: any) => j.company?.companyName ?? "" },
     {
       header: "Kunde",
-      cell: (item: any) => item.customerType === 'property_manager' 
-        ? item.propertyManager?.name 
-        : item.privateCustomer?.name,
+      accessorKey: "customerType",
+      cell: (j: any) =>
+        j.customerType === "property_manager"
+          ? (j.propertyManager?.name ?? "HV")
+          : (j.privateCustomer?.name ?? "Privat"),
     },
-    {
-      header: "Firma",
-      accessorKey: "company.companyName",
-      cell: (item: any) => item.company?.companyName,
-    },
-    {
-      header: "Gewerbe",
-      accessorKey: "trade",
-      cell: (item: any) => (
-        <Badge variant="outline" className="bg-slate-50 font-normal">
-          {item.trade}
-        </Badge>
-      ),
-    },
-    {
-      header: "Status",
-      accessorKey: "status",
-      cell: (item: any) => {
-        const styles = {
-          open: "bg-yellow-100 text-yellow-700 border-yellow-200",
-          done: "bg-green-100 text-green-700 border-green-200",
-          canceled: "bg-gray-100 text-gray-700 border-gray-200",
-        };
-        const labels = {
-          open: "Offen",
-          done: "Erledigt",
-          canceled: "Storniert",
-        };
-        return (
-          <Badge className={cn("capitalize shadow-none border", styles[item.status as keyof typeof styles])}>
-            {labels[item.status as keyof typeof labels]}
-          </Badge>
-        );
-      },
-    },
+    { header: "Status", accessorKey: "status", cell: (j: any) => statusBadge(j.status) },
     {
       header: "Aktionen",
-      cell: (item: any) => (
-        <Button variant="ghost" size="sm" onClick={() => setSelectedJob(item)}>
-          <Eye className="h-4 w-4 text-slate-500" />
+      cell: (j: any) => (
+        <Button
+          variant="link"
+          onClick={() => {
+            setEditingItem(j);
+            setIsOpen(true);
+          }}
+        >
+          Bearbeiten
         </Button>
       ),
     },
@@ -112,73 +67,140 @@ export default function Jobs() {
     <div className="space-y-8">
       <div>
         <h2 className="text-3xl font-display font-bold text-slate-900">Einsätze</h2>
-        <p className="text-slate-500 mt-2">Verwaltung aller Aufträge und Einsätze</p>
+        <p className="text-slate-500 mt-2">Einsätze erfassen, suchen und dokumentieren</p>
       </div>
 
       <DataTable
         data={jobs || []}
         columns={columns}
-        searchKey="jobNumber" // Or trade, or address - simple client side search
+        searchKeys={[
+          "jobNumber",
+          "dateTime",
+          "serviceAddress",
+          "trade",
+          "activity",
+          "status",
+          "reportText",
+          "company.companyName",
+          "company.contactName",
+          "company.phone",
+          "company.email",
+          "company.address",
+          "company.trades",
+          "company.notes",
+          "propertyManager.name",
+          "propertyManager.address",
+          "propertyManager.phone",
+          "propertyManager.email",
+          "propertyManager.notes",
+          "privateCustomer.name",
+          "privateCustomer.address",
+          "privateCustomer.phone",
+          "privateCustomer.email",
+          "privateCustomer.notes",
+        ]}
+        searchPlaceholder="Suche: Adresse, Gewerk, Firma, Kunde, Telefon, Email, Status, Bericht, Notes..."
         createLabel="Neuer Einsatz"
-        onCreate={() => setIsCreateOpen(true)}
+        onCreate={() => {
+          setEditingItem(null);
+          setIsOpen(true);
+        }}
         isLoading={isLoading}
       />
 
-      <CreateJobDialog open={isCreateOpen} onOpenChange={setIsCreateOpen} />
-      {selectedJob && (
-        <JobDetailDialog job={selectedJob} open={!!selectedJob} onOpenChange={(o) => !o && setSelectedJob(null)} />
-      )}
+      <JobDialog
+        open={isOpen}
+        onOpenChange={setIsOpen}
+        item={editingItem}
+        companies={companies || []}
+        managers={managers || []}
+        customers={customers || []}
+      />
     </div>
   );
 }
 
-function CreateJobDialog({ open, onOpenChange }: { open: boolean, onOpenChange: (open: boolean) => void }) {
-  const { mutateAsync: createJob, isPending } = useCreateJob();
-  const { data: companies } = useCompanies();
-  const { data: pms } = usePropertyManagers();
-  const { data: privates } = usePrivateCustomers();
+function JobDialog({
+  open,
+  onOpenChange,
+  item,
+  companies,
+  managers,
+  customers,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  item?: any;
+  companies: any[];
+  managers: any[];
+  customers: any[];
+}) {
   const { toast } = useToast();
+  const { mutateAsync: create } = useCreateJob();
+  const { mutateAsync: update } = useUpdateJob();
 
   const form = useForm({
     resolver: zodResolver(api.jobs.create.input),
-    defaultValues: {
+    defaultValues: item || {
       dateTime: new Date(),
       customerType: "property_manager",
-      trade: "",
-      activity: "",
+      propertyManagerId: undefined,
+      privateCustomerId: undefined,
       serviceAddress: "",
-      referralFee: "60",
+      companyId: undefined,
+      trade: "Installateur",
+      activity: "",
       status: "open",
+      reportText: "",
+      referralFee: "49",
     },
+    values: item
+      ? {
+          ...item,
+          dateTime: item.dateTime ? new Date(item.dateTime) : new Date(),
+          referralFee: item.referralFee ?? "49",
+        }
+      : undefined,
   });
 
   const customerType = form.watch("customerType");
-  const selectedTrade = form.watch("trade");
-
-  // Filter companies by trade
-  const filteredCompanies = companies?.filter(c => 
-    !selectedTrade || c.trades.includes(selectedTrade)
-  ) || [];
-
-  const allTrades = Array.from(new Set(companies?.flatMap(c => c.trades) || []));
 
   async function onSubmit(data: any) {
     try {
-      await createJob(data);
-      toast({ title: "Einsatz erstellt", description: "Der Einsatz wurde erfolgreich angelegt." });
+      // Minimal-Logik: nur 1 Kundentyp darf gesetzt sein
+      if (data.customerType === "property_manager") {
+        data.privateCustomerId = null;
+        if (!data.propertyManagerId) throw new Error("Bitte Hausverwaltung auswählen.");
+      } else {
+        data.propertyManagerId = null;
+        if (!data.privateCustomerId) throw new Error("Bitte Privatkunde auswählen.");
+      }
+
+      if (!data.companyId) throw new Error("Bitte Betrieb auswählen.");
+
+      if (item) {
+        await update({ id: item.id, ...data });
+        toast({ title: "Aktualisiert" });
+      } else {
+        await create(data);
+        toast({ title: "Erstellt" });
+      }
+
       onOpenChange(false);
       form.reset();
-    } catch (e) {
-      toast({ title: "Fehler", description: "Einsatz konnte nicht erstellt werden.", variant: "destructive" });
+    } catch (e: any) {
+      toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
+      console.error(e);
     }
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="font-display text-xl">Neuen Einsatz anlegen</DialogTitle>
+          <DialogTitle>{item ? "Einsatz bearbeiten" : "Neuer Einsatz"}</DialogTitle>
         </DialogHeader>
+
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
@@ -186,53 +208,36 @@ function CreateJobDialog({ open, onOpenChange }: { open: boolean, onOpenChange: 
                 control={form.control}
                 name="dateTime"
                 render={({ field }) => (
-                  <FormItem className="flex flex-col">
-                    <FormLabel>Datum & Zeit</FormLabel>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <FormControl>
-                          <Button variant="outline" className={cn(!field.value && "text-muted-foreground", "pl-3 text-left font-normal w-full rounded-xl")}>
-                            {field.value ? format(field.value, "PPP HH:mm", { locale: de }) : <span>Wähle Datum</span>}
-                            <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
-                          </Button>
-                        </FormControl>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0" align="start">
-                        <Calendar
-                          mode="single"
-                          selected={field.value}
-                          onSelect={field.onChange}
-                          initialFocus
-                        />
-                         <div className="p-3 border-t">
-                          <Input type="time" onChange={(e) => {
-                            const [hours, minutes] = e.target.value.split(':');
-                            const newDate = new Date(field.value);
-                            newDate.setHours(parseInt(hours), parseInt(minutes));
-                            field.onChange(newDate);
-                          }} />
-                        </div>
-                      </PopoverContent>
-                    </Popover>
+                  <FormItem>
+                    <FormLabel>Datum & Uhrzeit</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="datetime-local"
+                        value={field.value ? new Date(field.value).toISOString().slice(0, 16) : ""}
+                        onChange={(e) => field.onChange(new Date(e.target.value))}
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
               <FormField
                 control={form.control}
-                name="customerType"
+                name="status"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Kunden Typ</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <FormLabel>Status</FormLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
-                        <SelectTrigger className="rounded-xl">
-                          <SelectValue placeholder="Wähle Typ" />
+                        <SelectTrigger>
+                          <SelectValue placeholder="Status wählen" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="property_manager">Hausverwaltung</SelectItem>
-                        <SelectItem value="private_customer">Privatkunde</SelectItem>
+                        <SelectItem value="open">Offen</SelectItem>
+                        <SelectItem value="done">Erledigt</SelectItem>
+                        <SelectItem value="canceled">Storniert</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -241,54 +246,6 @@ function CreateJobDialog({ open, onOpenChange }: { open: boolean, onOpenChange: 
               />
             </div>
 
-            {customerType === "property_manager" ? (
-              <FormField
-                control={form.control}
-                name="propertyManagerId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Hausverwaltung</FormLabel>
-                    <Select onValueChange={(val) => field.onChange(parseInt(val))} value={field.value?.toString()}>
-                      <FormControl>
-                        <SelectTrigger className="rounded-xl">
-                          <SelectValue placeholder="Wähle HV" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {pms?.map((pm) => (
-                          <SelectItem key={pm.id} value={pm.id.toString()}>{pm.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            ) : (
-              <FormField
-                control={form.control}
-                name="privateCustomerId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Privatkunde</FormLabel>
-                    <Select onValueChange={(val) => field.onChange(parseInt(val))} value={field.value?.toString()}>
-                      <FormControl>
-                        <SelectTrigger className="rounded-xl">
-                          <SelectValue placeholder="Wähle Kunden" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {privates?.map((pc) => (
-                          <SelectItem key={pc.id} value={pc.id.toString()}>{pc.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            )}
-
             <FormField
               control={form.control}
               name="serviceAddress"
@@ -296,7 +253,7 @@ function CreateJobDialog({ open, onOpenChange }: { open: boolean, onOpenChange: 
                 <FormItem>
                   <FormLabel>Einsatzadresse</FormLabel>
                   <FormControl>
-                    <Input placeholder="Straße, PLZ Ort" {...field} className="rounded-xl" />
+                    <Input {...field} placeholder="z.B. Musterstraße 12, 1010 Wien" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -310,41 +267,44 @@ function CreateJobDialog({ open, onOpenChange }: { open: boolean, onOpenChange: 
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Gewerk</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
-                        <SelectTrigger className="rounded-xl">
-                          <SelectValue placeholder="Wähle Gewerk" />
+                        <SelectTrigger>
+                          <SelectValue placeholder="Gewerk wählen" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {allTrades.map((t) => (
-                          <SelectItem key={t} value={t}>{t}</SelectItem>
-                        ))}
+                        <SelectItem value="Installateur">Installateur</SelectItem>
+                        <SelectItem value="Elektriker">Elektriker</SelectItem>
+                        <SelectItem value="Dachdecker">Dachdecker</SelectItem>
+                        <SelectItem value="Schlosser">Schlosser</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
               <FormField
                 control={form.control}
                 name="companyId"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Firma</FormLabel>
-                    <Select 
-                      onValueChange={(val) => field.onChange(parseInt(val))} 
-                      value={field.value?.toString()}
-                      disabled={!selectedTrade}
+                    <FormLabel>Betrieb</FormLabel>
+                    <Select
+                      value={field.value ? String(field.value) : ""}
+                      onValueChange={(v) => field.onChange(Number(v))}
                     >
                       <FormControl>
-                        <SelectTrigger className="rounded-xl">
-                          <SelectValue placeholder={selectedTrade ? "Wähle Firma" : "Zuerst Gewerk wählen"} />
+                        <SelectTrigger>
+                          <SelectValue placeholder="Betrieb auswählen" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {filteredCompanies.map((c) => (
-                          <SelectItem key={c.id} value={c.id.toString()}>{c.companyName}</SelectItem>
+                        {companies.map((c) => (
+                          <SelectItem key={c.id} value={String(c.id)}>
+                            {c.companyName} ({(c.trades || []).join(", ")})
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -352,6 +312,88 @@ function CreateJobDialog({ open, onOpenChange }: { open: boolean, onOpenChange: 
                   </FormItem>
                 )}
               />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="customerType"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Kundentyp</FormLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Kundentyp wählen" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="property_manager">Hausverwaltung</SelectItem>
+                        <SelectItem value="private_customer">Privatkunde</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {customerType === "property_manager" ? (
+                <FormField
+                  control={form.control}
+                  name="propertyManagerId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Hausverwaltung</FormLabel>
+                      <Select
+                        value={field.value ? String(field.value) : ""}
+                        onValueChange={(v) => field.onChange(Number(v))}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="HV auswählen" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {managers.map((m) => (
+                            <SelectItem key={m.id} value={String(m.id)}>
+                              {m.name} — {m.phone}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              ) : (
+                <FormField
+                  control={form.control}
+                  name="privateCustomerId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Privatkunde</FormLabel>
+                      <Select
+                        value={field.value ? String(field.value) : ""}
+                        onValueChange={(v) => field.onChange(Number(v))}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Privatkunde auswählen" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {customers.map((c) => (
+                            <SelectItem key={c.id} value={String(c.id)}>
+                              {c.name} — {c.phone}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
             </div>
 
             <FormField
@@ -359,151 +401,34 @@ function CreateJobDialog({ open, onOpenChange }: { open: boolean, onOpenChange: 
               name="activity"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Tätigkeit / Beschreibung</FormLabel>
+                  <FormLabel>Tätigkeit / Problem</FormLabel>
                   <FormControl>
-                    <Textarea placeholder="Was ist zu tun?" {...field} className="rounded-xl min-h-[100px]" />
+                    <Textarea rows={3} {...field} placeholder="z.B. Wasserrohrbruch, Sicherung fliegt, ..." />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-            <div className="pt-4 flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="rounded-xl">Abbrechen</Button>
-              <Button type="submit" className="rounded-xl" disabled={isPending}>
-                {isPending ? <Loader2 className="animate-spin h-4 w-4" /> : "Einsatz erstellen"}
-              </Button>
+            <FormField
+              control={form.control}
+              name="reportText"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Bericht / Dokumentation</FormLabel>
+                  <FormControl>
+                    <Textarea rows={4} {...field} placeholder="Was wurde gemacht? Ergebnis? Material? ..." />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <div className="flex justify-end pt-4">
+              <Button type="submit">{item ? "Speichern" : "Einsatz erstellen"}</Button>
             </div>
           </form>
         </Form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function JobDetailDialog({ job, open, onOpenChange }: { job: any, open: boolean, onOpenChange: (open: boolean) => void }) {
-  const { mutateAsync: updateJob } = useUpdateJob();
-  const { downloadPdf, sendEmail } = useJobActions();
-  const { toast } = useToast();
-  const [reportText, setReportText] = useState(job.reportText || "");
-
-  const handleStatusChange = async (status: string) => {
-    try {
-      await updateJob({ id: job.id, status });
-      toast({ title: "Status aktualisiert" });
-      onOpenChange(false);
-    } catch (e) {
-      toast({ title: "Fehler", variant: "destructive" });
-    }
-  };
-
-  const handleSaveReport = async () => {
-    try {
-      await updateJob({ id: job.id, reportText });
-      toast({ title: "Bericht gespeichert" });
-    } catch (e) {
-      toast({ title: "Fehler", variant: "destructive" });
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <div className="flex justify-between items-start">
-            <div>
-              <DialogTitle className="font-display text-2xl">Einsatz #{job.jobNumber}</DialogTitle>
-              <p className="text-muted-foreground mt-1">
-                {format(new Date(job.dateTime), "PPP 'um' HH:mm", { locale: de })}
-              </p>
-            </div>
-            <Badge variant={job.status === 'done' ? 'default' : 'secondary'} className="text-base px-3 py-1">
-              {job.status === 'open' && 'Offen'}
-              {job.status === 'done' && 'Erledigt'}
-              {job.status === 'canceled' && 'Storniert'}
-            </Badge>
-          </div>
-        </DialogHeader>
-
-        <div className="grid md:grid-cols-2 gap-8 py-4">
-          <div className="space-y-6">
-            <div>
-              <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-2">Auftraggeber</h4>
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                <p className="font-bold text-slate-900">
-                  {job.customerType === 'property_manager' ? job.propertyManager?.name : job.privateCustomer?.name}
-                </p>
-                <p className="text-slate-600 text-sm mt-1">
-                  {job.customerType === 'property_manager' ? job.propertyManager?.address : job.privateCustomer?.address}
-                </p>
-              </div>
-            </div>
-            
-            <div>
-              <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-2">Ausführende Firma</h4>
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                <p className="font-bold text-slate-900">{job.company?.companyName}</p>
-                <Badge variant="outline" className="mt-2 bg-white">{job.trade}</Badge>
-              </div>
-            </div>
-
-             <div>
-              <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-2">Einsatzort</h4>
-               <p className="text-slate-900">{job.serviceAddress}</p>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <div>
-              <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-2">Tätigkeit</h4>
-              <p className="text-slate-700 bg-slate-50 p-4 rounded-xl border border-slate-100 min-h-[80px]">
-                {job.activity}
-              </p>
-            </div>
-
-            <div>
-              <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-2">Bericht / Notizen</h4>
-              <div className="flex gap-2">
-                <Textarea 
-                  value={reportText} 
-                  onChange={(e) => setReportText(e.target.value)} 
-                  className="rounded-xl min-h-[100px]" 
-                  placeholder="Bericht hier eingeben..."
-                />
-              </div>
-              <Button onClick={handleSaveReport} size="sm" variant="outline" className="mt-2 w-full">Speichern</Button>
-            </div>
-          </div>
-        </div>
-
-        <div className="border-t pt-6 flex flex-wrap gap-3 justify-between">
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => downloadPdf(job.id)}>
-              <FileText className="mr-2 h-4 w-4" /> PDF Vorschau
-            </Button>
-            <Button variant="outline" onClick={() => sendEmail(job.id)}>
-              <Mail className="mr-2 h-4 w-4" /> E-Mail senden
-            </Button>
-          </div>
-          
-          <div className="flex gap-2">
-            {job.status === 'open' && (
-              <>
-                 <Button variant="destructive" onClick={() => handleStatusChange('canceled')}>
-                  <X className="mr-2 h-4 w-4" /> Stornieren
-                </Button>
-                <Button className="bg-green-600 hover:bg-green-700" onClick={() => handleStatusChange('done')}>
-                  <Check className="mr-2 h-4 w-4" /> Abschluss
-                </Button>
-              </>
-            )}
-             {job.status === 'done' && (
-               <Button variant="outline" onClick={() => handleStatusChange('open')}>
-                  Wieder öffnen
-                </Button>
-             )}
-          </div>
-        </div>
       </DialogContent>
     </Dialog>
   );

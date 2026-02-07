@@ -20,10 +20,12 @@ export default function PropertyManagers() {
     { header: "Adresse", accessorKey: "address" },
     { header: "Telefon", accessorKey: "phone" },
     { header: "Email", accessorKey: "email" },
-    { 
-      header: "Aktionen", 
+    {
+      header: "Aktionen",
       cell: (item: any) => (
-        <Button variant="link" onClick={() => { setEditingItem(item); setIsOpen(true); }}>Bearbeiten</Button>
+        <Button variant="link" onClick={() => { setEditingItem(item); setIsOpen(true); }}>
+          Bearbeiten
+        </Button>
       )
     },
   ];
@@ -34,19 +36,18 @@ export default function PropertyManagers() {
         <h2 className="text-3xl font-display font-bold text-slate-900">Hausverwaltungen</h2>
         <p className="text-slate-500 mt-2">Kundenstamm der Hausverwaltungen verwalten</p>
       </div>
-      <DataTable 
-        data={managers || []} 
-        columns={columns} 
-        searchKey="name"
+
+      <DataTable
+        data={managers || []}
+        columns={columns}
+        searchKeys={["name", "address", "phone", "email", "notes"]}
+        searchPlaceholder="Suche: Name, Adresse, Telefon, Email..."
         isLoading={isLoading}
         onCreate={() => { setEditingItem(null); setIsOpen(true); }}
         createLabel="Neue HV anlegen"
       />
-      <ManagerDialog 
-        open={isOpen} 
-        onOpenChange={setIsOpen} 
-        item={editingItem} 
-      />
+
+      <ManagerDialog open={isOpen} onOpenChange={setIsOpen} item={editingItem} />
     </div>
   );
 }
@@ -59,7 +60,7 @@ function ManagerDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
   const form = useForm({
     resolver: zodResolver(api.propertyManagers.create.input),
     defaultValues: item || { name: "", address: "", phone: "", email: "", notes: "" },
-    values: item // Update form when item changes
+    values: item
   });
 
   async function onSubmit(data: any) {
@@ -73,8 +74,8 @@ function ManagerDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
       }
       onOpenChange(false);
       form.reset();
-    } catch (e) {
-      toast({ title: "Fehler", variant: "destructive" });
+    } catch (e: any) {
+      toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
     }
   }
 
@@ -84,6 +85,7 @@ function ManagerDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
         <DialogHeader>
           <DialogTitle>{item ? "HV Bearbeiten" : "Neue Hausverwaltung"}</DialogTitle>
         </DialogHeader>
+
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
             <FormField
@@ -132,6 +134,7 @@ function ManagerDialog({ open, onOpenChange, item }: { open: boolean, onOpenChan
                 )}
               />
             </div>
+
             <div className="flex justify-end pt-4">
               <Button type="submit">{item ? "Speichern" : "Erstellen"}</Button>
             </div>

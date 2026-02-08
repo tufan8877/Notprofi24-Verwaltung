@@ -4,7 +4,7 @@ import session from "express-session";
 import MemoryStore from "memorystore";
 import nodemailer from "nodemailer";
 import { startOfMonth, endOfMonth, parseISO } from "date-fns";
-import { and, eq, between, desc, sql } from "drizzle-orm";
+import { and, eq, between, desc, sql, inArray } from "drizzle-orm";
 
 import { storage } from "./storage";
 import { api } from "@shared/routes";
@@ -16,9 +16,18 @@ import { jobs, invoiceItems, invoices as invoicesTable } from "@shared/schema";
 const SessionStore = MemoryStore(session);
 
 const VAT_RATE = 0.2; // 20% USt
-const DEFAULT_FEE_NET = 49; // 49 Netto pro Einsatz
+const DEFAULT_FEE_NET = 49.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
+const CANCELLATION_FEE_NET = 14.9; // Stornogebühr Netto
 
-// Types extension for session
+// Status-Mapping (je nach Projekt – hier die üblichen Strings)
+const STATUS_OPEN = "open";
+const STATUS_DONE = "done";
+const STATUS_CANCELLED_1 = "cancelled";
+const STATUS_CANCELLED_2 = "storniert";
+
+// Alle Status, die in die Abrechnung sollen
+const BILLING_STATUSES = [STATUS_OPEN, STATUS_DONE, STATUS_CANCELLED_1, STATUS_CANCELLED_2] as const;
+
 declare module "express-session" {
   interface SessionData {
     isAdmin: boolean;
@@ -26,8 +35,12 @@ declare module "express-session" {
   }
 }
 
+function isCancelledStatus(status: string) {
+  return status === STATUS_CANCELLED_1 || status === STATUS_CANCELLED_2;
+}
+
 async function recalcInvoiceTotals(invoiceId: number) {
-  // Summe Netto aus invoiceItems.amount (numeric -> in TS oft string)
+  // Summe Netto aus invoiceItems.amount
   const rows = await db
     .select({
       totalNet: sql<number>`coalesce(sum(${invoiceItems.amount}), 0)`,
@@ -49,39 +62,30 @@ async function recalcInvoiceTotals(invoiceId: number) {
 }
 
 async function mergeDuplicateInvoices(companyId: number, monthYear: string) {
-  // alle Rechnungen für Firma+Monat holen
   const list = await db.query.invoices.findMany({
     where: and(eq(invoicesTable.companyId, companyId), eq(invoicesTable.monthYear, monthYear)),
     orderBy: [desc(invoicesTable.createdAt)],
   });
 
-  if (list.length <= 1) {
-    return list[0] ?? null;
-  }
+  if (list.length <= 1) return list[0] ?? null;
 
-  // wir behalten die NEUESTE als "Master"
   const master = list[0];
   const duplicates = list.slice(1);
 
-  // Alle invoiceItems der Dubletten auf Master umhängen
   for (const dup of duplicates) {
     await db
       .update(invoiceItems)
       .set({ invoiceId: master.id })
       .where(eq(invoiceItems.invoiceId, dup.id));
 
-    // Dublette löschen
     await db.delete(invoicesTable).where(eq(invoicesTable.id, dup.id));
   }
 
-  // Totals neu rechnen
   await recalcInvoiceTotals(master.id);
-
   return master;
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // Sessions
   app.use(
     session({
       store: new SessionStore({ checkPeriod: 86400000 }),
@@ -95,7 +99,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // Nodemailer
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST || "smtp.example.com",
     port: Number(process.env.SMTP_PORT) || 587,
@@ -111,7 +114,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.status(401).json({ message: "Unauthorized" });
   };
 
-  // Health
   app.get("/api/health", async (_req, res) => {
     try {
       await storage.getStats();
@@ -142,7 +144,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.status(401).json({ message: "Unauthorized" });
   });
 
-  // Protect all /api except login/logout/me/health
   app.use("/api", (req, res, next) => {
     if (req.path === "/login" || req.path === "/logout" || req.path === "/me" || req.path === "/health") return next();
     return requireAuth(req, res, next);
@@ -249,14 +250,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // INVOICES
   app.get(api.invoices.list.path, async (_req, res) => res.json(await storage.getInvoices()));
 
-  // Detail für Klick (zeigt alle invoiceItems + jobs)
+  // Detail (für Klick → Jobs anzeigen)
   app.get("/api/invoices/:id", async (req, res) => {
     const inv = await storage.getInvoice(Number(req.params.id));
     if (!inv) return res.status(404).json({ message: "Invoice not found" });
     res.json(inv);
   });
 
-  // ✅ Generieren: 1 Rechnung pro Firma+Monat (merge + append)
+  // ✅ Generieren: open + done + storniert, storniert = 14.90 netto
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
 
@@ -264,79 +265,74 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = startOfMonth(date);
     const end = endOfMonth(date);
 
-    // Fee Netto (Settings fallback 49)
     const settings: any = await (storage as any).getSettings?.().catch(() => null);
-    const feeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
+    const standardFeeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
 
-    // 1) DONE Jobs im Zeitraum
-    const doneJobs = await db
+    // Alle Jobs, die in die Abrechnung dürfen (open/done/cancelled/storniert)
+    const jobsInMonth = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.status, "done"), between(jobs.dateTime, start, end)));
+      .where(
+        and(
+          between(jobs.dateTime, start, end),
+          inArray(jobs.status as any, BILLING_STATUSES as any)
+        )
+      );
 
-    if (doneJobs.length === 0) {
-      return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
+    if (jobsInMonth.length === 0) {
+      return res.json({ generatedCount: 0, message: "No billable jobs found for this month" });
     }
 
-    // 2) Schon fakturierte Jobs raus
+    // Bereits verrechnete Jobs raus
     const existing = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
     const alreadyInvoiced = new Set(existing.map((x) => x.jobId));
-    const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoiced.has(j.id));
+    const newJobs = jobsInMonth.filter((j) => !alreadyInvoiced.has(j.id));
 
-    if (jobsToInvoice.length === 0) {
-      // trotzdem: falls alte Dubletten existieren, mergen wir sie beim Generate
-      // (weil du ja “nur 1 Rechnung sehen” willst)
-      const companiesInMonth = [...new Set(doneJobs.map((j) => j.companyId))];
-      for (const cid of companiesInMonth) {
-        await mergeDuplicateInvoices(cid, monthYear);
-      }
-      return res.json({ generatedCount: 0, message: "No new jobs to invoice. Duplicates (if any) were merged." });
-    }
-
-    // 3) Gruppieren nach Firma
-    const byCompany = new Map<number, typeof jobsToInvoice>();
-    for (const job of jobsToInvoice) {
-      if (!byCompany.has(job.companyId)) byCompany.set(job.companyId, []);
-      byCompany.get(job.companyId)!.push(job);
-    }
+    // Firmen im Monat (auch wenn keine neuen Jobs → Dubletten mergen + totals fixen)
+    const companyIds = [...new Set(jobsInMonth.map((j) => j.companyId))];
 
     let touched = 0;
 
-    for (const [companyId, companyJobs] of byCompany.entries()) {
-      // ✅ Dubletten mergen (wenn es schon 2-3 Rechnungen gibt)
+    for (const companyId of companyIds) {
+      // 1) Dubletten mergen → nur 1 Rechnung pro Firma+Monat
       let master = await mergeDuplicateInvoices(companyId, monthYear);
 
+      // 2) Wenn keine Rechnung vorhanden → erstellen
       if (!master) {
-        // keine Rechnung vorhanden -> neu erstellen
         const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
-
         const created = await storage.createInvoice(
           {
             invoiceNumber,
             monthYear,
             companyId,
             status: "unpaid",
-            totalAmount: "0.00", // wird gleich recalc gesetzt
+            totalAmount: "0.00", // wird durch recalc gesetzt
             createdAt: new Date(),
             sentAt: null,
             paidAt: null,
           } as any,
-          [] // items kommen unten
+          []
         );
-
         master = created as any;
       }
 
-      // ✅ neue invoiceItems anhängen (NETTO)
-      await db.insert(invoiceItems).values(
-        companyJobs.map((j) => ({
-          invoiceId: (master as any).id,
-          jobId: j.id,
-          amount: feeNet.toFixed(2), // NETTO pro Einsatz
-        }))
-      );
+      // 3) Neue Jobs dieser Firma anhängen
+      const newJobsForCompany = newJobs.filter((j) => j.companyId === companyId);
 
-      // ✅ totals neu rechnen (setzt totalAmount=BRUTTO)
+      if (newJobsForCompany.length > 0) {
+        await db.insert(invoiceItems).values(
+          newJobsForCompany.map((j) => {
+            const feeNet = isCancelledStatus(String(j.status)) ? CANCELLATION_FEE_NET : standardFeeNet;
+            return {
+              invoiceId: (master as any).id,
+              jobId: j.id,
+              amount: feeNet.toFixed(2), // ✅ NETTO
+            };
+          })
+        );
+      }
+
+      // 4) totals neu berechnen (BRUTTO)
       await recalcInvoiceTotals((master as any).id);
 
       touched++;

@@ -1,18 +1,19 @@
 import type { Express, Request, Response, NextFunction } from "express";
-import type { Server } from "http";
+import { createServer, type Server } from "http";
+import { storage } from "./storage";
+import { api } from "@shared/routes";
 import session from "express-session";
 import MemoryStore from "memorystore";
-import { ZodError } from "zod";
-import { api } from "@shared/routes";
-import { storage } from "./storage";
-import { db } from "./db";
 import { generateJobPdf, generateInvoicePdf } from "./pdf";
-import { startOfMonth, endOfMonth, parseISO } from "date-fns";
+import nodemailer from "nodemailer";
+import { startOfMonth, endOfMonth, parseISO, format } from "date-fns";
+import { db } from "./db";
 import { jobs, invoiceItems } from "@shared/schema";
-import { and, eq, between, sql } from "drizzle-orm";
+import { and, eq, between } from "drizzle-orm";
 
 const SessionStore = MemoryStore(session);
 
+// Types extension for session
 declare module "express-session" {
   interface SessionData {
     isAdmin: boolean;
@@ -20,21 +21,10 @@ declare module "express-session" {
   }
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let t: NodeJS.Timeout;
-  const timeout = new Promise<never>((_, rej) => {
-    t = setTimeout(() => rej(new Error(`TIMEOUT after ${ms}ms: ${label}`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(t!)) as Promise<T>;
-}
-
-function asyncHandler(fn: (req: Request, res: Response) => Promise<any>) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    fn(req, res).catch(next);
-  };
-}
+const VAT_RATE = 0.20; // AT 20% USt
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // Setup Session
   app.use(
     session({
       store: new SessionStore({ checkPeriod: 86400000 }),
@@ -43,344 +33,289 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       saveUninitialized: false,
       cookie: {
         secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         maxAge: 24 * 60 * 60 * 1000,
       },
     })
   );
 
+  // Email Transporter
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST || "smtp.example.com",
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: false,
+    auth: {
+      user: process.env.SMTP_USER || "user",
+      pass: process.env.SMTP_PASS || "pass",
+    },
+  });
+
+  // Auth Middleware
   const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    if (req.session.isAdmin) return next();
-    res.status(401).json({ message: "Unauthorized" });
+    if (req.session.isAdmin) next();
+    else res.status(401).json({ message: "Unauthorized" });
   };
 
-  // ✅ DB Health
-  app.get(
-    "/api/health",
-    asyncHandler(async (_req, res) => {
-      try {
-        await withTimeout(db.execute(sql`select 1`), 8000, "db select 1");
-        res.json({ ok: true, db: true });
-      } catch (e: any) {
-        res.json({ ok: true, db: false, error: String(e?.message ?? e) });
-      }
-    })
-  );
+  // Health
+  app.get("/api/health", async (_req, res) => {
+    try {
+      await storage.getSettings?.();
+      res.json({ ok: true, db: true });
+    } catch {
+      res.json({ ok: true, db: false });
+    }
+  });
 
-  // ✅ DB Diagnose: listet Tabellen in public
-  app.get(
-    "/api/diagnose",
-    asyncHandler(async (_req, res) => {
-      try {
-        await withTimeout(db.execute(sql`select 1`), 8000, "db ping");
-        const tables = await withTimeout(
-          db.execute(sql`
-            select table_name
-            from information_schema.tables
-            where table_schema = 'public'
-            order by table_name
-          `),
-          8000,
-          "list tables"
-        );
-        res.json({ ok: true, tables });
-      } catch (e: any) {
-        res.json({ ok: false, error: String(e?.message ?? e) });
-      }
-    })
-  );
-
-  // AUTH
-  app.post(
-    api.auth.login.path,
-    asyncHandler(async (req, res) => {
-      const { email, password } = api.auth.login.input.parse(req.body);
-
-      if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
-        req.session.isAdmin = true;
-        req.session.userEmail = email;
-        return res.json({ message: "Logged in successfully" });
-      }
-      res.status(401).json({ message: "Invalid credentials" });
-    })
-  );
+  // === AUTH ===
+  app.post(api.auth.login.path, async (req, res) => {
+    const { email, password } = api.auth.login.input.parse(req.body);
+    if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
+      req.session.isAdmin = true;
+      req.session.userEmail = email;
+      return res.json({ message: "Logged in successfully" });
+    }
+    res.status(401).json({ message: "Invalid credentials" });
+  });
 
   app.post(api.auth.logout.path, (req, res) => {
     req.session.destroy(() => res.json({ message: "Logged out" }));
   });
 
   app.get(api.auth.me.path, (req, res) => {
-    if (req.session.isAdmin) return res.json({ email: req.session.userEmail });
-    res.status(401).json({ message: "Unauthorized" });
+    if (req.session.isAdmin) res.json({ email: req.session.userEmail });
+    else res.status(401).json({ message: "Unauthorized" });
   });
 
-  // Protect all /api except auth + health/diagnose
+  // Protect all /api except login/logout/me/health
   app.use("/api", (req, res, next) => {
-    if (
-      req.path === "/login" ||
-      req.path === "/logout" ||
-      req.path === "/me" ||
-      req.path === "/health" ||
-      req.path === "/diagnose"
-    ) {
-      return next();
-    }
-    requireAuth(req, res, next);
+    if (req.path === "/login" || req.path === "/logout" || req.path === "/me" || req.path === "/health") return next();
+    return requireAuth(req, res, next);
   });
 
-  // PROPERTY MANAGERS
-  app.get(
-    api.propertyManagers.list.path,
-    asyncHandler(async (_req, res) => {
-      const data = await withTimeout(storage.getPropertyManagers(), 12000, "getPropertyManagers");
-      res.json(data);
-    })
-  );
+  // === PROPERTY MANAGERS ===
+  app.get(api.propertyManagers.list.path, async (_req, res) => res.json(await storage.getPropertyManagers()));
+  app.post(api.propertyManagers.create.path, async (req, res) => {
+    const input = api.propertyManagers.create.input.parse(req.body);
+    res.status(201).json(await storage.createPropertyManager(input));
+  });
+  app.put(api.propertyManagers.update.path, async (req, res) => {
+    const input = api.propertyManagers.update.input.parse(req.body);
+    res.json(await storage.updatePropertyManager(Number(req.params.id), input));
+  });
+  app.delete(api.propertyManagers.delete.path, async (req, res) => {
+    await storage.deletePropertyManager(Number(req.params.id));
+    res.status(204).send();
+  });
 
-  app.post(
-    api.propertyManagers.create.path,
-    asyncHandler(async (req, res) => {
-      const input = api.propertyManagers.create.input.parse(req.body);
-      const data = await withTimeout(storage.createPropertyManager(input), 12000, "createPropertyManager");
-      res.status(201).json(data);
-    })
-  );
+  // === PRIVATE CUSTOMERS ===
+  app.get(api.privateCustomers.list.path, async (_req, res) => res.json(await storage.getPrivateCustomers()));
+  app.post(api.privateCustomers.create.path, async (req, res) => {
+    const input = api.privateCustomers.create.input.parse(req.body);
+    res.status(201).json(await storage.createPrivateCustomer(input));
+  });
+  app.put(api.privateCustomers.update.path, async (req, res) => {
+    const input = api.privateCustomers.update.input.parse(req.body);
+    res.json(await storage.updatePrivateCustomer(Number(req.params.id), input));
+  });
+  app.delete(api.privateCustomers.delete.path, async (req, res) => {
+    await storage.deletePrivateCustomer(Number(req.params.id));
+    res.status(204).send();
+  });
 
-  app.put(
-    api.propertyManagers.update.path,
-    asyncHandler(async (req, res) => {
-      const input = api.propertyManagers.update.input.parse(req.body);
-      const data = await withTimeout(storage.updatePropertyManager(Number(req.params.id), input), 12000, "updatePropertyManager");
-      res.json(data);
-    })
-  );
+  // === COMPANIES ===
+  app.get(api.companies.list.path, async (_req, res) => res.json(await storage.getCompanies()));
+  app.post(api.companies.create.path, async (req, res) => {
+    const input = api.companies.create.input.parse(req.body);
+    res.status(201).json(await storage.createCompany(input));
+  });
+  app.put(api.companies.update.path, async (req, res) => {
+    const input = api.companies.update.input.parse(req.body);
+    res.json(await storage.updateCompany(Number(req.params.id), input));
+  });
+  app.delete(api.companies.delete.path, async (req, res) => {
+    await storage.deleteCompany(Number(req.params.id));
+    res.status(204).send();
+  });
 
-  app.delete(
-    api.propertyManagers.delete.path,
-    asyncHandler(async (req, res) => {
-      await withTimeout(storage.deletePropertyManager(Number(req.params.id)), 12000, "deletePropertyManager");
-      res.status(204).send();
-    })
-  );
+  // === JOBS ===
+  app.get(api.jobs.list.path, async (_req, res) => res.json(await storage.getJobs()));
+  app.get(api.jobs.get.path, async (req, res) => {
+    const data = await storage.getJob(Number(req.params.id));
+    if (!data) return res.status(404).json({ message: "Job not found" });
+    res.json(data);
+  });
+  app.post(api.jobs.create.path, async (req, res) => {
+    const input = api.jobs.create.input.parse(req.body);
+    res.status(201).json(await storage.createJob(input));
+  });
+  app.put(api.jobs.update.path, async (req, res) => {
+    const input = api.jobs.update.input.parse(req.body);
+    res.json(await storage.updateJob(Number(req.params.id), input));
+  });
 
-  // PRIVATE CUSTOMERS
-  app.get(
-    api.privateCustomers.list.path,
-    asyncHandler(async (_req, res) => {
-      const data = await withTimeout(storage.getPrivateCustomers(), 12000, "getPrivateCustomers");
-      res.json(data);
-    })
-  );
+  app.post(api.jobs.generatePdf.path, async (req, res) => {
+    const job = await storage.getJob(Number(req.params.id));
+    if (!job) return res.status(404).json({ message: "Job not found" });
 
-  app.post(
-    api.privateCustomers.create.path,
-    asyncHandler(async (req, res) => {
-      const input = api.privateCustomers.create.input.parse(req.body);
-      const data = await withTimeout(storage.createPrivateCustomer(input), 12000, "createPrivateCustomer");
-      res.status(201).json(data);
-    })
-  );
+    const pdfBytes = await generateJobPdf(job, job.company, job.propertyManager, job.privateCustomer);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=job-${job.jobNumber}.pdf`);
+    res.send(Buffer.from(pdfBytes));
+  });
 
-  app.put(
-    api.privateCustomers.update.path,
-    asyncHandler(async (req, res) => {
-      const input = api.privateCustomers.update.input.parse(req.body);
-      const data = await withTimeout(storage.updatePrivateCustomer(Number(req.params.id), input), 12000, "updatePrivateCustomer");
-      res.json(data);
-    })
-  );
+  app.post(api.jobs.sendEmail.path, async (req, res) => {
+    const job = await storage.getJob(Number(req.params.id));
+    if (!job) return res.status(404).json({ message: "Job not found" });
 
-  app.delete(
-    api.privateCustomers.delete.path,
-    asyncHandler(async (req, res) => {
-      await withTimeout(storage.deletePrivateCustomer(Number(req.params.id)), 12000, "deletePrivateCustomer");
-      res.status(204).send();
-    })
-  );
+    const pdfBytes = await generateJobPdf(job, job.company, job.propertyManager, job.privateCustomer);
 
-  // COMPANIES
-  app.get(
-    api.companies.list.path,
-    asyncHandler(async (_req, res) => {
-      const data = await withTimeout(storage.getCompanies(), 12000, "getCompanies");
-      res.json(data);
-    })
-  );
+    let recipientEmail = "";
+    if (job.propertyManager) recipientEmail = job.propertyManager.email;
+    else if (job.privateCustomer) recipientEmail = job.privateCustomer.email;
 
-  app.post(
-    api.companies.create.path,
-    asyncHandler(async (req, res) => {
-      const input = api.companies.create.input.parse(req.body);
-      const data = await withTimeout(storage.createCompany(input), 12000, "createCompany");
-      res.status(201).json(data);
-    })
-  );
+    if (!recipientEmail) return res.status(400).json({ success: false, message: "No customer email found" });
 
-  app.put(
-    api.companies.update.path,
-    asyncHandler(async (req, res) => {
-      const input = api.companies.update.input.parse(req.body);
-      const data = await withTimeout(storage.updateCompany(Number(req.params.id), input), 12000, "updateCompany");
-      res.json(data);
-    })
-  );
-
-  app.delete(
-    api.companies.delete.path,
-    asyncHandler(async (req, res) => {
-      await withTimeout(storage.deleteCompany(Number(req.params.id)), 12000, "deleteCompany");
-      res.status(204).send();
-    })
-  );
-
-  // JOBS
-  app.get(
-    api.jobs.list.path,
-    asyncHandler(async (_req, res) => {
-      const data = await withTimeout(storage.getJobs(), 12000, "getJobs");
-      res.json(data);
-    })
-  );
-
-  app.post(
-    api.jobs.create.path,
-    asyncHandler(async (req, res) => {
-      const input = api.jobs.create.input.parse(req.body);
-      const data = await withTimeout(storage.createJob(input), 12000, "createJob");
-      res.status(201).json(data);
-    })
-  );
-
-  app.put(
-    api.jobs.update.path,
-    asyncHandler(async (req, res) => {
-      const input = api.jobs.update.input.parse(req.body);
-      const data = await withTimeout(storage.updateJob(Number(req.params.id), input), 12000, "updateJob");
-      res.json(data);
-    })
-  );
-
-  app.post(
-    api.jobs.generatePdf.path,
-    asyncHandler(async (req, res) => {
-      const job = await withTimeout(storage.getJob(Number(req.params.id)), 12000, "getJob for pdf");
-      if (!job) return res.status(404).json({ message: "Job not found" });
-
-      const pdfBytes = await withTimeout(
-        generateJobPdf(job as any, (job as any).company, (job as any).propertyManager, (job as any).privateCustomer),
-        15000,
-        "generateJobPdf"
-      );
-
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename=job-${(job as any).jobNumber}.pdf`);
-      res.send(Buffer.from(pdfBytes));
-    })
-  );
-
-  // INVOICES
-  app.get(
-    api.invoices.list.path,
-    asyncHandler(async (_req, res) => {
-      const data = await withTimeout(storage.getInvoices(), 12000, "getInvoices");
-      res.json(data);
-    })
-  );
-
-  // ✅ 49€ netto pro erledigtem Job
-  app.post(
-    api.invoices.generate.path,
-    asyncHandler(async (req, res) => {
-      const { monthYear } = api.invoices.generate.input.parse(req.body);
-      const date = parseISO(`${monthYear}-01`);
-      const start = startOfMonth(date);
-      const end = endOfMonth(date);
-
-      const doneJobs = await withTimeout(
-        db.select().from(jobs).where(and(eq(jobs.status, "done"), between(jobs.dateTime, start, end))),
-        15000,
-        "select done jobs"
-      );
-
-      if (doneJobs.length === 0) return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
-
-      const existingItems = await withTimeout(
-        db.select({ jobId: invoiceItems.jobId }).from(invoiceItems),
-        15000,
-        "select invoice items"
-      );
-      const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
-      const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
-
-      if (jobsToInvoice.length === 0) return res.json({ generatedCount: 0, message: "All done jobs for this month are already invoiced" });
-
-      const jobsByCompany = new Map<number, typeof jobsToInvoice>();
-      for (const job of jobsToInvoice) {
-        if (!jobsByCompany.has(job.companyId)) jobsByCompany.set(job.companyId, []);
-        jobsByCompany.get(job.companyId)!.push(job);
-      }
-
-      const PRICE_PER_JOB_NET = 49;
-
-      let generatedCount = 0;
-      for (const [companyId, companyJobs] of jobsByCompany.entries()) {
-        const totalAmount = companyJobs.length * PRICE_PER_JOB_NET;
-        const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
-
-        await withTimeout(
-          storage.createInvoice(
-            {
-              invoiceNumber,
-              monthYear,
-              companyId,
-              status: "unpaid",
-              totalAmount: totalAmount.toString(),
-              createdAt: new Date(),
-              sentAt: null,
-              paidAt: null,
-            } as any,
-            companyJobs.map((j) => ({ jobId: j.id, amount: PRICE_PER_JOB_NET }))
-          ),
-          15000,
-          "createInvoice"
-        );
-
-        generatedCount++;
-      }
-
-      res.json({ generatedCount, message: `Generated ${generatedCount} invoices` });
-    })
-  );
-
-  app.post(
-    api.invoices.generatePdf.path,
-    asyncHandler(async (req, res) => {
-      const invoice = await withTimeout(storage.getInvoice(Number(req.params.id)), 12000, "getInvoice");
-      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-
-      const items = (invoice as any).items.map((it: any) => ({ ...it, job: it.job }));
-      const pdfBytes = await withTimeout(
-        generateInvoicePdf(invoice as any, (invoice as any).company, items),
-        15000,
-        "generateInvoicePdf"
-      );
-
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename=invoice-${(invoice as any).invoiceNumber}.pdf`);
-      res.send(Buffer.from(pdfBytes));
-    })
-  );
-
-  // ✅ GLOBAL ERROR HANDLER (wichtig!)
-  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
-    console.error("\n[API ERROR]", req.method, req.originalUrl);
-    console.error("BODY:", req.body);
-    console.error(err);
-
-    if (err instanceof ZodError) {
-      return res.status(400).json({ message: "Validation error", issues: err.issues });
+    try {
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || '"Notprofi24.at" <noreply@notprofi24.at>',
+        to: recipientEmail,
+        subject: `Einsatzbericht #${job.jobNumber}`,
+        text: `Sehr geehrte Damen und Herren,\n\nanbei erhalten Sie den Einsatzbericht für den Auftrag #${job.jobNumber}.\n\nMit freundlichen Grüßen,\nIhr Notprofi24.at Team`,
+        attachments: [{ filename: `job-${job.jobNumber}.pdf`, content: Buffer.from(pdfBytes) }],
+      });
+      res.json({ success: true, message: "Email sent successfully" });
+    } catch (error: any) {
+      console.error("Email sending failed:", error);
+      res.status(500).json({ success: false, message: "Failed to send email: " + error.message });
     }
-    return res.status(500).json({ message: "Server error", error: String(err?.message ?? err) });
+  });
+
+  // === INVOICES ===
+  app.get(api.invoices.list.path, async (_req, res) => {
+    // storage.getInvoices muss itemCount/net/vat/gross liefern (machen wir in storage.ts)
+    res.json(await storage.getInvoices());
+  });
+
+  app.post(api.invoices.generate.path, async (req, res) => {
+    const { monthYear } = api.invoices.generate.input.parse(req.body);
+
+    const date = parseISO(`${monthYear}-01`);
+    const start = startOfMonth(date);
+    const end = endOfMonth(date);
+
+    // ✅ Settings: Standard Provision ist NETTO pro Einsatz
+    const settings = (await storage.getSettings?.()) as any;
+    const feeNet = Number(settings?.standardProvision ?? 49); // Netto pro Job
+    const feeGross = +(feeNet * (1 + VAT_RATE)).toFixed(2);
+
+    // 1) DONE Jobs im Zeitraum
+    const doneJobs = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.status, "done"), between(jobs.dateTime, start, end)));
+
+    if (doneJobs.length === 0) {
+      return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
+    }
+
+    // 2) Schon fakturierte Jobs herausfiltern
+    const existingItems = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
+    const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
+    const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
+
+    if (jobsToInvoice.length === 0) {
+      return res.json({ generatedCount: 0, message: "All done jobs for this month are already invoiced" });
+    }
+
+    // 3) Gruppieren nach Firma
+    const jobsByCompany = new Map<number, typeof jobsToInvoice>();
+    for (const job of jobsToInvoice) {
+      if (!jobsByCompany.has(job.companyId)) jobsByCompany.set(job.companyId, []);
+      jobsByCompany.get(job.companyId)!.push(job);
+    }
+
+    // 4) Rechnungen erstellen (Brutto in invoice.totalAmount)
+    let generatedCount = 0;
+
+    for (const [companyId, companyJobs] of jobsByCompany.entries()) {
+      const count = companyJobs.length;
+
+      const totalNet = +(count * feeNet).toFixed(2);
+      const vat = +(totalNet * VAT_RATE).toFixed(2);
+      const totalGross = +(totalNet + vat).toFixed(2);
+
+      const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
+
+      await storage.createInvoice(
+        {
+          invoiceNumber,
+          monthYear,
+          companyId,
+          status: "unpaid",
+          totalAmount: totalGross.toFixed(2), // ✅ BRUTTO
+          createdAt: new Date(),
+          sentAt: null,
+          paidAt: null,
+        } as any,
+        // ✅ invoiceItems amount = NETTO pro Job
+        companyJobs.map((j) => ({ jobId: j.id, amount: feeNet }))
+      );
+
+      generatedCount++;
+    }
+
+    res.json({ generatedCount, message: `Generated ${generatedCount} invoices` });
+  });
+
+  app.post(api.invoices.markPaid.path, async (req, res) => {
+    const data = await storage.updateInvoice(Number(req.params.id), {
+      status: "paid",
+      paidAt: new Date(),
+    } as any);
+    res.json(data);
+  });
+
+  app.post(api.invoices.generatePdf.path, async (req, res) => {
+    const invoice = await storage.getInvoice(Number(req.params.id));
+    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+    const items = invoice.items.map((item: any) => ({ ...item, job: item.job }));
+
+    const pdfBytes = await generateInvoicePdf(invoice as any, (invoice as any).company, items as any);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=invoice-${invoice.invoiceNumber}.pdf`);
+    res.send(Buffer.from(pdfBytes));
+  });
+
+  app.post(api.invoices.sendEmail.path, async (req, res) => {
+    const invoice = await storage.getInvoice(Number(req.params.id));
+    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+    const items = (invoice as any).items.map((item: any) => ({ ...item, job: item.job }));
+    const pdfBytes = await generateInvoicePdf(invoice as any, (invoice as any).company, items as any);
+
+    const recipientEmail = (invoice as any).company?.email;
+    if (!recipientEmail) return res.status(400).json({ success: false, message: "No company email found" });
+
+    try {
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || '"Notprofi24.at" <noreply@notprofi24.at>',
+        to: recipientEmail,
+        subject: `Rechnung ${invoice.monthYear} - ${invoice.invoiceNumber}`,
+        text: `Sehr geehrte Damen und Herren,\n\nanbei erhalten Sie die Abrechnung für ${invoice.monthYear}.\n\nMit freundlichen Grüßen,\nIhr Notprofi24.at Team`,
+        attachments: [{ filename: `invoice-${invoice.invoiceNumber}.pdf`, content: Buffer.from(pdfBytes) }],
+      });
+
+      await storage.updateInvoice(invoice.id, { sentAt: new Date() } as any);
+      res.json({ success: true, message: "Email sent successfully" });
+    } catch (error: any) {
+      console.error("Email sending failed:", error);
+      res.status(500).json({ success: false, message: "Failed to send email: " + error.message });
+    }
+  });
+
+  // === STATS ===
+  app.get(api.stats.dashboard.path, async (_req, res) => {
+    res.json(await storage.getStats());
   });
 
   return httpServer;

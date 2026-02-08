@@ -12,11 +12,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { useLocation } from "wouter";
 
 export default function Companies() {
   const { data: companies, isLoading } = useCompanies();
   const [isOpen, setIsOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
+  const [, setLocation] = useLocation();
 
   const columns = [
     { header: "Firma", accessorKey: "companyName", className: "font-bold" },
@@ -39,24 +41,30 @@ export default function Companies() {
     {
       header: "Status",
       accessorKey: "isActive",
-      cell: (item: any) => (
-        <Badge variant={item.isActive ? "default" : "destructive"}>
-          {item.isActive ? "Aktiv" : "Inaktiv"}
-        </Badge>
-      ),
+      cell: (item: any) => <Badge variant={item.isActive ? "default" : "destructive"}>{item.isActive ? "Aktiv" : "Inaktiv"}</Badge>,
     },
     {
       header: "Aktionen",
       cell: (item: any) => (
-        <Button
-          variant="link"
-          onClick={() => {
-            setEditingItem(item);
-            setIsOpen(true);
-          }}
-        >
-          Bearbeiten
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setLocation(`/jobs?companyId=${item.id}`)}
+            title="Alle vermittelten Einsätze ansehen"
+          >
+            Einsätze
+          </Button>
+
+          <Button
+            variant="link"
+            onClick={() => {
+              setEditingItem(item);
+              setIsOpen(true);
+            }}
+          >
+            Bearbeiten
+          </Button>
+        </div>
       ),
     },
   ];
@@ -70,18 +78,9 @@ export default function Companies() {
 
       <DataTable
         data={companies || []}
-        columns={columns}
-        searchKeys={[
-          "companyName",
-          "contactName",
-          "address",
-          "phone",
-          "email",
-          "notes",
-          "trades",
-          "isActive",
-        ]}
-        searchPlaceholder="Suche: Firmenname, Kontakt, Adresse, Telefon, Email, Gewerk, Notes..."
+        columns={columns as any}
+        searchKeys={["companyName", "contactName", "address", "phone", "email", "notes", "trades", "isActive"]}
+        searchPlaceholder="Suche: Firma, Kontakt, Adresse, Telefon, Email, Gewerk, Notes..."
         isLoading={isLoading}
         onCreate={() => {
           setEditingItem(null);
@@ -95,15 +94,7 @@ export default function Companies() {
   );
 }
 
-function CompanyDialog({
-  open,
-  onOpenChange,
-  item,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  item?: any;
-}) {
+function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChange: (open: boolean) => void; item?: any }) {
   const { mutateAsync: create } = useCreateCompany();
   const { mutateAsync: update } = useUpdateCompany();
   const { toast } = useToast();
@@ -123,25 +114,18 @@ function CompanyDialog({
     values: item,
   });
 
-  const availableTrades = ["Installateur", "Elektriker", "Dachdecker", "Schlosser", "Maler", "Glaser"];
+  const availableTrades = ["Installateur", "Elektriker", "Dachdecker", "Schlosser"];
 
   async function onSubmit(data: any) {
     try {
-      if (item) {
-        await update({ id: item.id, ...data });
-        toast({ title: "Aktualisiert" });
-      } else {
-        await create(data);
-        toast({ title: "Erstellt" });
-      }
+      if (item) await update({ id: item.id, ...data });
+      else await create(data);
+
+      toast({ title: item ? "Aktualisiert" : "Erstellt" });
       onOpenChange(false);
       form.reset();
     } catch (e: any) {
-      toast({
-        title: "Fehler",
-        description: String(e?.message ?? e),
-        variant: "destructive",
-      });
+      toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
       console.error(e);
     }
   }
@@ -162,9 +146,7 @@ function CompanyDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Firmenname</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
+                    <FormControl><Input {...field} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -175,9 +157,7 @@ function CompanyDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Ansprechpartner</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
+                    <FormControl><Input {...field} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -190,9 +170,7 @@ function CompanyDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Adresse</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
+                  <FormControl><Input {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )}
@@ -205,9 +183,7 @@ function CompanyDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Telefon</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
+                    <FormControl><Input {...field} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -218,9 +194,7 @@ function CompanyDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Email</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
+                    <FormControl><Input {...field} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -244,9 +218,7 @@ function CompanyDialog({
                             else field.onChange(field.value.filter((t: string) => t !== trade));
                           }}
                         />
-                        <label htmlFor={trade} className="text-sm font-medium leading-none">
-                          {trade}
-                        </label>
+                        <label htmlFor={trade} className="text-sm font-medium leading-none">{trade}</label>
                       </div>
                     ))}
                   </div>
@@ -277,9 +249,7 @@ function CompanyDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Notizen</FormLabel>
-                  <FormControl>
-                    <Textarea rows={4} {...field} />
-                  </FormControl>
+                  <FormControl><Textarea rows={4} {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )}

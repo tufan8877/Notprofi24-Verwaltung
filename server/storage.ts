@@ -6,91 +6,54 @@ import {
   jobs,
   invoices,
   invoiceItems,
-  type PropertyManager,
   type InsertPropertyManager,
-  type PrivateCustomer,
   type InsertPrivateCustomer,
-  type Company,
   type InsertCompany,
-  type Job,
   type InsertJob,
+  type UpdateJobRequest,
   type Invoice,
-  type InsertInvoice,
-  type InvoiceItem,
 } from "@shared/schema";
-import { eq, desc, and, sql, between } from "drizzle-orm";
-
-const VAT_RATE = 0.2; // 20% USt (AT)
+import { desc, eq, and, between, sql } from "drizzle-orm";
+import { format } from "date-fns";
 
 export interface IStorage {
-  // Auth
-  getUserByEmail(email: string): Promise<{ email: string } | undefined>;
-
   // Property Managers
-  getPropertyManagers(): Promise<PropertyManager[]>;
-  getPropertyManager(id: number): Promise<PropertyManager | undefined>;
-  createPropertyManager(pm: InsertPropertyManager): Promise<PropertyManager>;
-  updatePropertyManager(id: number, pm: Partial<InsertPropertyManager>): Promise<PropertyManager>;
+  getPropertyManagers(): Promise<any[]>;
+  getPropertyManager(id: number): Promise<any>;
+  createPropertyManager(data: InsertPropertyManager): Promise<any>;
+  updatePropertyManager(id: number, data: Partial<InsertPropertyManager>): Promise<any>;
   deletePropertyManager(id: number): Promise<void>;
 
   // Private Customers
-  getPrivateCustomers(): Promise<PrivateCustomer[]>;
-  getPrivateCustomer(id: number): Promise<PrivateCustomer | undefined>;
-  createPrivateCustomer(customer: InsertPrivateCustomer): Promise<PrivateCustomer>;
-  updatePrivateCustomer(id: number, customer: Partial<InsertPrivateCustomer>): Promise<PrivateCustomer>;
+  getPrivateCustomers(): Promise<any[]>;
+  getPrivateCustomer(id: number): Promise<any>;
+  createPrivateCustomer(data: InsertPrivateCustomer): Promise<any>;
+  updatePrivateCustomer(id: number, data: Partial<InsertPrivateCustomer>): Promise<any>;
   deletePrivateCustomer(id: number): Promise<void>;
 
   // Companies
-  getCompanies(): Promise<Company[]>;
-  getCompany(id: number): Promise<Company | undefined>;
-  createCompany(company: InsertCompany): Promise<Company>;
-  updateCompany(id: number, company: Partial<InsertCompany>): Promise<Company>;
+  getCompanies(): Promise<any[]>;
+  getCompany(id: number): Promise<any>;
+  createCompany(data: InsertCompany): Promise<any>;
+  updateCompany(id: number, data: Partial<InsertCompany>): Promise<any>;
   deleteCompany(id: number): Promise<void>;
 
   // Jobs
-  getJobs(): Promise<
-    (Job & {
-      company: Company | null;
-      propertyManager: PropertyManager | null;
-      privateCustomer: PrivateCustomer | null;
-    })[]
-  >;
-  getJob(
-    id: number
-  ): Promise<
-    | (Job & {
-        company: Company | null;
-        propertyManager: PropertyManager | null;
-        privateCustomer: PrivateCustomer | null;
-      })
-    | undefined
-  >;
-  createJob(job: InsertJob): Promise<Job>;
-  updateJob(id: number, job: Partial<InsertJob>): Promise<Job>;
+  getJobs(): Promise<any[]>;
+  getJob(id: number): Promise<any>;
+  createJob(data: InsertJob): Promise<any>;
+  updateJob(id: number, data: UpdateJobRequest): Promise<any>;
+  deleteJob(id: number): Promise<void>;
 
   // Invoices
-  getInvoices(): Promise<
-    (Invoice & {
-      company: Company | null;
-      itemCount: number;
-      totalNet: string; // Summe Netto aus invoiceItems.amount
-      vat: string; // 20% von totalNet
-      totalGross: string; // totalNet + vat
-    })[]
-  >;
+  getInvoices(): Promise<any[]>;
+  getInvoice(id: number): Promise<any>;
+  createInvoice(invoice: any, items: any[]): Promise<any>;
+  updateInvoice(id: number, data: Partial<Invoice>): Promise<any>;
 
-  getInvoice(
-    id: number
-  ): Promise<
-    | (Invoice & {
-        company: Company | null;
-        items: (InvoiceItem & { job: Job | null })[];
-      })
-    | undefined
-  >;
-
-  createInvoice(invoice: InsertInvoice, items: { jobId: number; amount: number }[]): Promise<Invoice>;
-  updateInvoice(id: number, invoice: Partial<InsertInvoice>): Promise<Invoice>;
+  // Settings (minimal)
+  getSettings(): Promise<any>;
+  updateSettings(data: any): Promise<any>;
 
   // Stats
   getStats(): Promise<{
@@ -101,88 +64,119 @@ export interface IStorage {
   }>;
 }
 
+function normalizeStatus(s: unknown): string {
+  return String(s ?? "").trim().toLowerCase();
+}
+
+/**
+ * In der App gibt’s oft Mischungen wie:
+ * - "canceled" / "cancelled" / "storniert"
+ * Wir behandeln alle als "storniert".
+ */
+function isCancelledStatus(status: unknown): boolean {
+  const v = normalizeStatus(status);
+  return v === "canceled" || v === "cancelled" || v === "storniert" || v === "canceled " || v === "cancelled ";
+}
+
+function isDoneStatus(status: unknown): boolean {
+  const v = normalizeStatus(status);
+  return v === "done" || v === "erledigt";
+}
+
+function isOpenStatus(status: unknown): boolean {
+  const v = normalizeStatus(status);
+  return v === "open" || v === "offen";
+}
+
 export class DatabaseStorage implements IStorage {
-  async getUserByEmail(email: string): Promise<{ email: string } | undefined> {
-    // ENV Auth
-    if (email === process.env.ADMIN_EMAIL) {
-      return { email: process.env.ADMIN_EMAIL as string };
-    }
-    return undefined;
+  // === Property Managers ===
+  async getPropertyManagers() {
+    return await db.select().from(propertyManagers).orderBy(desc(propertyManagers.id));
   }
 
-  // Property Managers
-  async getPropertyManagers() {
-    return db.select().from(propertyManagers).orderBy(desc(propertyManagers.createdAt));
-  }
   async getPropertyManager(id: number) {
-    const [pm] = await db.select().from(propertyManagers).where(eq(propertyManagers.id, id));
-    return pm;
+    const [item] = await db.select().from(propertyManagers).where(eq(propertyManagers.id, id));
+    return item;
   }
-  async createPropertyManager(pm: InsertPropertyManager) {
-    const [newPm] = await db.insert(propertyManagers).values(pm).returning();
-    return newPm;
+
+  async createPropertyManager(data: InsertPropertyManager) {
+    const [created] = await db.insert(propertyManagers).values(data).returning();
+    return created;
   }
-  async updatePropertyManager(id: number, pm: Partial<InsertPropertyManager>) {
-    const [updated] = await db.update(propertyManagers).set(pm).where(eq(propertyManagers.id, id)).returning();
+
+  async updatePropertyManager(id: number, data: Partial<InsertPropertyManager>) {
+    const [updated] = await db.update(propertyManagers).set(data).where(eq(propertyManagers.id, id)).returning();
     return updated;
   }
+
   async deletePropertyManager(id: number) {
     await db.delete(propertyManagers).where(eq(propertyManagers.id, id));
   }
 
-  // Private Customers
+  // === Private Customers ===
   async getPrivateCustomers() {
-    return db.select().from(privateCustomers).orderBy(desc(privateCustomers.createdAt));
+    return await db.select().from(privateCustomers).orderBy(desc(privateCustomers.id));
   }
+
   async getPrivateCustomer(id: number) {
-    const [customer] = await db.select().from(privateCustomers).where(eq(privateCustomers.id, id));
-    return customer;
+    const [item] = await db.select().from(privateCustomers).where(eq(privateCustomers.id, id));
+    return item;
   }
-  async createPrivateCustomer(customer: InsertPrivateCustomer) {
-    const [newCustomer] = await db.insert(privateCustomers).values(customer).returning();
-    return newCustomer;
+
+  async createPrivateCustomer(data: InsertPrivateCustomer) {
+    const [created] = await db.insert(privateCustomers).values(data).returning();
+    return created;
   }
-  async updatePrivateCustomer(id: number, customer: Partial<InsertPrivateCustomer>) {
-    const [updated] = await db.update(privateCustomers).set(customer).where(eq(privateCustomers.id, id)).returning();
+
+  async updatePrivateCustomer(id: number, data: Partial<InsertPrivateCustomer>) {
+    const [updated] = await db.update(privateCustomers).set(data).where(eq(privateCustomers.id, id)).returning();
     return updated;
   }
+
   async deletePrivateCustomer(id: number) {
     await db.delete(privateCustomers).where(eq(privateCustomers.id, id));
   }
 
-  // Companies
+  // === Companies ===
   async getCompanies() {
-    return db.select().from(companies).orderBy(desc(companies.createdAt));
+    return await db.select().from(companies).orderBy(desc(companies.id));
   }
+
   async getCompany(id: number) {
-    const [company] = await db.select().from(companies).where(eq(companies.id, id));
-    return company;
+    const [item] = await db.select().from(companies).where(eq(companies.id, id));
+    return item;
   }
-  async createCompany(company: InsertCompany) {
-    const [newCompany] = await db.insert(companies).values(company).returning();
-    return newCompany;
+
+  async createCompany(data: InsertCompany) {
+    const [created] = await db.insert(companies).values(data).returning();
+    return created;
   }
-  async updateCompany(id: number, company: Partial<InsertCompany>) {
-    const [updated] = await db.update(companies).set(company).where(eq(companies.id, id)).returning();
+
+  async updateCompany(id: number, data: Partial<InsertCompany>) {
+    const [updated] = await db.update(companies).set(data).where(eq(companies.id, id)).returning();
     return updated;
   }
+
   async deleteCompany(id: number) {
     await db.delete(companies).where(eq(companies.id, id));
   }
 
-  // Jobs
+  // === Jobs ===
   async getJobs() {
-    return db.query.jobs.findMany({
-      orderBy: [desc(jobs.dateTime)],
+    // Join job with company & customer details for UI display
+    const result = await db.query.jobs.findMany({
       with: {
         company: true,
         propertyManager: true,
         privateCustomer: true,
       },
+      orderBy: desc(jobs.id),
     });
+    return result;
   }
+
   async getJob(id: number) {
-    return db.query.jobs.findFirst({
+    const result = await db.query.jobs.findFirst({
       where: eq(jobs.id, id),
       with: {
         company: true,
@@ -190,53 +184,41 @@ export class DatabaseStorage implements IStorage {
         privateCustomer: true,
       },
     });
-  }
-  async createJob(job: InsertJob) {
-    const [newJob] = await db.insert(jobs).values(job).returning();
-    return newJob;
-  }
-  async updateJob(id: number, job: Partial<InsertJob>) {
-    const [updated] = await db.update(jobs).set(job).where(eq(jobs.id, id)).returning();
-    return updated;
+    return result;
   }
 
-  // Invoices
+  async createJob(data: InsertJob) {
+    const [created] = await db.insert(jobs).values(data).returning();
+    return await this.getJob(created.id);
+  }
+
+  async updateJob(id: number, data: UpdateJobRequest) {
+    const [updated] = await db.update(jobs).set(data).where(eq(jobs.id, id)).returning();
+    return await this.getJob(updated.id);
+  }
+
+  async deleteJob(id: number) {
+    await db.delete(jobs).where(eq(jobs.id, id));
+  }
+
+  // === Invoices ===
   async getInvoices() {
-    // Wir laden invoices + company + items, damit wir zählen und Netto/USt/Brutto berechnen können
-    const rows = await db.query.invoices.findMany({
-      orderBy: [desc(invoices.createdAt)],
+    const result = await db.query.invoices.findMany({
       with: {
         company: true,
-        items: true,
+        items: {
+          with: {
+            job: true,
+          },
+        },
       },
+      orderBy: desc(invoices.id),
     });
-
-    return rows.map((inv: any) => {
-      const itemsArr: any[] = inv.items || [];
-      const itemCount = itemsArr.length;
-
-      // invoiceItems.amount ist numeric -> in TS oft string
-      const totalNetNum = itemsArr.reduce((sum: number, it: any) => sum + Number(it.amount || 0), 0);
-      const totalNet = Number(totalNetNum.toFixed(2));
-
-      const vatNum = totalNet * VAT_RATE;
-      const vat = Number(vatNum.toFixed(2));
-
-      const totalGrossNum = totalNet + vat;
-      const totalGross = Number(totalGrossNum.toFixed(2));
-
-      return {
-        ...inv,
-        itemCount,
-        totalNet: totalNet.toFixed(2),
-        vat: vat.toFixed(2),
-        totalGross: totalGross.toFixed(2),
-      };
-    });
+    return result;
   }
 
   async getInvoice(id: number) {
-    return db.query.invoices.findFirst({
+    const result = await db.query.invoices.findFirst({
       where: eq(invoices.id, id),
       with: {
         company: true,
@@ -246,63 +228,97 @@ export class DatabaseStorage implements IStorage {
           },
         },
       },
-    }) as any;
+    });
+    return result;
   }
 
-  async createInvoice(invoice: InsertInvoice, items: { jobId: number; amount: number }[]) {
-    const [newInvoice] = await db.insert(invoices).values(invoice).returning();
+  async createInvoice(invoice: any, items: any[]) {
+    const [createdInvoice] = await db.insert(invoices).values(invoice).returning();
 
-    if (items.length > 0) {
-      await db.insert(invoiceItems).values(
-        items.map((item) => ({
-          invoiceId: newInvoice.id,
-          jobId: item.jobId,
-          amount: item.amount.toString(), // numeric column akzeptiert string
-        }))
-      );
+    if (items && items.length > 0) {
+      const invoiceItemsData = items.map((item) => ({
+        invoiceId: createdInvoice.id,
+        jobId: item.jobId,
+        amount: item.amount.toString(),
+      }));
+      await db.insert(invoiceItems).values(invoiceItemsData);
     }
 
-    return newInvoice;
+    return await this.getInvoice(createdInvoice.id);
   }
 
-  async updateInvoice(id: number, invoice: Partial<InsertInvoice>) {
-    const [updated] = await db.update(invoices).set(invoice).where(eq(invoices.id, id)).returning();
-    return updated;
+  async updateInvoice(id: number, data: Partial<Invoice>) {
+    const [updated] = await db.update(invoices).set(data).where(eq(invoices.id, id)).returning();
+    return await this.getInvoice(updated.id);
   }
 
-  // Stats
+  // === Settings (minimal stub, so health-check works) ===
+  async getSettings() {
+    return {
+      companyName: "Notprofi24",
+      address: "",
+      uid: "",
+      defaultReferralFee: 49,
+      vatRate: 20,
+      cancelFeeNet: 14.9,
+    };
+  }
+
+  async updateSettings(data: any) {
+    // For now, you can persist later (table optional). Keeps UI working.
+    return { ...await this.getSettings(), ...data };
+  }
+
+  // === Stats ===
   async getStats() {
-    const [openJobs] = await db.select({ count: sql<number>`count(*)` }).from(jobs).where(eq(jobs.status, "open"));
+    // WICHTIG:
+    // - doneJobsMonth soll die erledigten Einsätze im aktuellen Monat zählen (anhand job.dateTime)
+    // - monthlyRevenue soll den Umsatz im aktuellen Monat aus invoices.monthYear holen (nicht createdAt)
 
-    // Done jobs this month
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-    const [doneJobsMonth] = await db
-      .select({ count: sql<number>`count(*)` })
+    // Start: 1. Tag 00:00:00.000
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+    // Ende: letzter Tag 23:59:59.999 (damit wirklich alles im Monat inkludiert ist)
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const monthYear = format(now, "yyyy-MM");
+
+    // Wir holen Status-Counts robust (weil Status manchmal in DE/EN oder Varianten vorkommen kann)
+    const allJobs = await db.select({ status: jobs.status }).from(jobs);
+
+    const openJobs = allJobs.filter((j) => isOpenStatus(j.status)).length;
+
+    // doneJobsMonth: nur done im aktuellen Monat (nach job.dateTime)
+    const doneJobsMonthRows = await db
+      .select({ id: jobs.id, status: jobs.status, dateTime: jobs.dateTime })
       .from(jobs)
-      .where(and(eq(jobs.status, "done"), between(jobs.dateTime, startOfMonth, endOfMonth)));
+      .where(between(jobs.dateTime, monthStart, monthEnd));
 
-    const [unpaidInvoices] = await db
+    const doneJobsMonth = doneJobsMonthRows.filter((j) => isDoneStatus(j.status)).length;
+
+    // Unpaid invoices count
+    const unpaidInvoicesRes = await db
       .select({ count: sql<number>`count(*)` })
       .from(invoices)
       .where(eq(invoices.status, "unpaid"));
 
-    // Summe der Rechnungen im Monat (DB Feld invoices.totalAmount)
-    // numeric kann als string kommen -> casten wir sauber
-    const [revenue] = await db
-      .select({
-        total: sql<number>`coalesce(sum(${invoices.totalAmount}), 0)`,
-      })
+    const unpaidInvoices = Number(unpaidInvoicesRes[0]?.count ?? 0);
+
+    // Monatsumsatz: Summe der Rechnungen vom aktuellen monthYear (robust & passt zu deiner Abrechnung-Logik)
+    const revenueRes = await db
+      .select({ sum: sql<string | null>`coalesce(sum(${invoices.totalAmount}), 0)` })
       .from(invoices)
-      .where(between(invoices.createdAt, startOfMonth, endOfMonth));
+      .where(eq(invoices.monthYear, monthYear));
+
+    const monthlyRevenue = Number(revenueRes[0]?.sum ?? 0);
 
     return {
-      openJobs: Number(openJobs?.count || 0),
-      doneJobsMonth: Number(doneJobsMonth?.count || 0),
-      unpaidInvoices: Number(unpaidInvoices?.count || 0),
-      monthlyRevenue: Number(revenue?.total || 0),
+      openJobs,
+      doneJobsMonth,
+      unpaidInvoices,
+      monthlyRevenue,
     };
   }
 }

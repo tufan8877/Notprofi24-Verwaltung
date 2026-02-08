@@ -1,17 +1,18 @@
 import type { Express, Request, Response, NextFunction } from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import session from "express-session";
 import MemoryStore from "memorystore";
 import { generateJobPdf, generateInvoicePdf } from "./pdf";
 import nodemailer from "nodemailer";
-import { startOfMonth, endOfMonth, parseISO, format } from "date-fns";
+import { startOfMonth, endOfMonth, parseISO } from "date-fns";
 import { db } from "./db";
-import { jobs, invoiceItems } from "@shared/schema";
-import { and, eq, between } from "drizzle-orm";
+import { jobs, invoiceItems, invoices as invoicesTable } from "@shared/schema";
+import { and, eq, between, desc } from "drizzle-orm";
 
 const SessionStore = MemoryStore(session);
+const VAT_RATE = 0.2; // 20% USt (AT)
 
 // Types extension for session
 declare module "express-session" {
@@ -20,8 +21,6 @@ declare module "express-session" {
     userEmail: string;
   }
 }
-
-const VAT_RATE = 0.20; // AT 20% USt
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // Setup Session
@@ -58,7 +57,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Health
   app.get("/api/health", async (_req, res) => {
     try {
-      await storage.getSettings?.();
+      await storage.getStats();
       res.json({ ok: true, db: true });
     } catch {
       res.json({ ok: true, db: false });
@@ -68,6 +67,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // === AUTH ===
   app.post(api.auth.login.path, async (req, res) => {
     const { email, password } = api.auth.login.input.parse(req.body);
+
     if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
       req.session.isAdmin = true;
       req.session.userEmail = email;
@@ -138,15 +138,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // === JOBS ===
   app.get(api.jobs.list.path, async (_req, res) => res.json(await storage.getJobs()));
+
   app.get(api.jobs.get.path, async (req, res) => {
     const data = await storage.getJob(Number(req.params.id));
     if (!data) return res.status(404).json({ message: "Job not found" });
     res.json(data);
   });
+
   app.post(api.jobs.create.path, async (req, res) => {
     const input = api.jobs.create.input.parse(req.body);
     res.status(201).json(await storage.createJob(input));
   });
+
   app.put(api.jobs.update.path, async (req, res) => {
     const input = api.jobs.update.input.parse(req.body);
     res.json(await storage.updateJob(Number(req.params.id), input));
@@ -156,9 +159,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const job = await storage.getJob(Number(req.params.id));
     if (!job) return res.status(404).json({ message: "Job not found" });
 
-    const pdfBytes = await generateJobPdf(job, job.company, job.propertyManager, job.privateCustomer);
+    const pdfBytes = await generateJobPdf(job as any, (job as any).company, (job as any).propertyManager, (job as any).privateCustomer);
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=job-${job.jobNumber}.pdf`);
+    res.setHeader("Content-Disposition", `attachment; filename=job-${(job as any).jobNumber}.pdf`);
     res.send(Buffer.from(pdfBytes));
   });
 
@@ -166,11 +169,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const job = await storage.getJob(Number(req.params.id));
     if (!job) return res.status(404).json({ message: "Job not found" });
 
-    const pdfBytes = await generateJobPdf(job, job.company, job.propertyManager, job.privateCustomer);
+    const pdfBytes = await generateJobPdf(job as any, (job as any).company, (job as any).propertyManager, (job as any).privateCustomer);
 
     let recipientEmail = "";
-    if (job.propertyManager) recipientEmail = job.propertyManager.email;
-    else if (job.privateCustomer) recipientEmail = job.privateCustomer.email;
+    if ((job as any).propertyManager) recipientEmail = (job as any).propertyManager.email;
+    else if ((job as any).privateCustomer) recipientEmail = (job as any).privateCustomer.email;
 
     if (!recipientEmail) return res.status(400).json({ success: false, message: "No customer email found" });
 
@@ -178,9 +181,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await transporter.sendMail({
         from: process.env.SMTP_FROM || '"Notprofi24.at" <noreply@notprofi24.at>',
         to: recipientEmail,
-        subject: `Einsatzbericht #${job.jobNumber}`,
-        text: `Sehr geehrte Damen und Herren,\n\nanbei erhalten Sie den Einsatzbericht für den Auftrag #${job.jobNumber}.\n\nMit freundlichen Grüßen,\nIhr Notprofi24.at Team`,
-        attachments: [{ filename: `job-${job.jobNumber}.pdf`, content: Buffer.from(pdfBytes) }],
+        subject: `Einsatzbericht #${(job as any).jobNumber}`,
+        text: `Sehr geehrte Damen und Herren,\n\nanbei erhalten Sie den Einsatzbericht für den Auftrag #${(job as any).jobNumber}.\n\nMit freundlichen Grüßen,\nIhr Notprofi24.at Team`,
+        attachments: [{ filename: `job-${(job as any).jobNumber}.pdf`, content: Buffer.from(pdfBytes) }],
       });
       res.json({ success: true, message: "Email sent successfully" });
     } catch (error: any) {
@@ -190,11 +193,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // === INVOICES ===
-  app.get(api.invoices.list.path, async (_req, res) => {
-    // storage.getInvoices muss itemCount/net/vat/gross liefern (machen wir in storage.ts)
-    res.json(await storage.getInvoices());
+  app.get(api.invoices.list.path, async (_req, res) => res.json(await storage.getInvoices()));
+
+  // ✅ NEW: invoice detail (für "draufklicken" → alle Jobs anzeigen)
+  app.get("/api/invoices/:id", async (req, res) => {
+    const inv = await storage.getInvoice(Number(req.params.id));
+    if (!inv) return res.status(404).json({ message: "Invoice not found" });
+    res.json(inv);
   });
 
+  // ✅ WICHTIG: 1 Rechnung pro Firma+Monat (anhängen statt neu)
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
 
@@ -202,9 +210,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = startOfMonth(date);
     const end = endOfMonth(date);
 
-    // ✅ Settings: Standard Provision ist NETTO pro Einsatz
-    const settings = (await storage.getSettings?.()) as any;
-    const feeNet = Number(settings?.standardProvision ?? 49); // Netto pro Job
+    // Provision pro Einsatz NETTO aus Settings (Fallback 49)
+    const settings: any = await (storage as any).getSettings?.().catch(() => null);
+    const feeNet = Number(settings?.standardProvision ?? 49);
     const feeGross = +(feeNet * (1 + VAT_RATE)).toFixed(2);
 
     // 1) DONE Jobs im Zeitraum
@@ -217,7 +225,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.json({ generatedCount: 0, message: "No done jobs found for this month" });
     }
 
-    // 2) Schon fakturierte Jobs herausfiltern
+    // 2) Schon fakturierte Jobs raus
     const existingItems = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
     const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
     const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
@@ -233,44 +241,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       jobsByCompany.get(job.companyId)!.push(job);
     }
 
-    // 4) Rechnungen erstellen (Brutto in invoice.totalAmount)
-    let generatedCount = 0;
+    let touchedInvoices = 0;
 
     for (const [companyId, companyJobs] of jobsByCompany.entries()) {
-      const count = companyJobs.length;
+      // ✅ Prüfen: existiert schon Rechnung für Monat + Firma?
+      const existingInvoice = await db.query.invoices.findFirst({
+        where: and(eq(invoicesTable.companyId, companyId), eq(invoicesTable.monthYear, monthYear)),
+        orderBy: [desc(invoicesTable.createdAt)],
+      });
 
-      const totalNet = +(count * feeNet).toFixed(2);
-      const vat = +(totalNet * VAT_RATE).toFixed(2);
-      const totalGross = +(totalNet + vat).toFixed(2);
+      const addCount = companyJobs.length;
+      const addNet = +(addCount * feeNet).toFixed(2);
+      const addVat = +(addNet * VAT_RATE).toFixed(2);
+      const addGross = +(addNet + addVat).toFixed(2);
 
-      const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
+      if (existingInvoice) {
+        // ✅ invoiceItems anhängen
+        await db.insert(invoiceItems).values(
+          companyJobs.map((j) => ({
+            invoiceId: existingInvoice.id,
+            jobId: j.id,
+            amount: feeNet.toString(), // NETTO
+          }))
+        );
 
-      await storage.createInvoice(
-        {
-          invoiceNumber,
-          monthYear,
-          companyId,
-          status: "unpaid",
-          totalAmount: totalGross.toFixed(2), // ✅ BRUTTO
-          createdAt: new Date(),
-          sentAt: null,
-          paidAt: null,
-        } as any,
-        // ✅ invoiceItems amount = NETTO pro Job
-        companyJobs.map((j) => ({ jobId: j.id, amount: feeNet }))
-      );
+        // ✅ totalAmount (BRUTTO) erhöhen
+        const currentGross = Number(existingInvoice.totalAmount ?? 0);
+        const newGross = +(currentGross + addGross).toFixed(2);
 
-      generatedCount++;
+        await db
+          .update(invoicesTable)
+          .set({ totalAmount: newGross.toFixed(2) })
+          .where(eq(invoicesTable.id, existingInvoice.id));
+
+        touchedInvoices++;
+      } else {
+        // ✅ NEUE Rechnung erstellen (BRUTTO)
+        const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
+
+        await storage.createInvoice(
+          {
+            invoiceNumber,
+            monthYear,
+            companyId,
+            status: "unpaid",
+            totalAmount: addGross.toFixed(2), // ✅ BRUTTO
+            createdAt: new Date(),
+            sentAt: null,
+            paidAt: null,
+          } as any,
+          companyJobs.map((j) => ({ jobId: j.id, amount: feeNet }))
+        );
+
+        touchedInvoices++;
+      }
     }
 
-    res.json({ generatedCount, message: `Generated ${generatedCount} invoices` });
+    res.json({ generatedCount: touchedInvoices, message: `Updated/created ${touchedInvoices} invoices` });
   });
 
   app.post(api.invoices.markPaid.path, async (req, res) => {
-    const data = await storage.updateInvoice(Number(req.params.id), {
-      status: "paid",
-      paidAt: new Date(),
-    } as any);
+    const data = await storage.updateInvoice(Number(req.params.id), { status: "paid", paidAt: new Date() } as any);
     res.json(data);
   });
 
@@ -278,11 +309,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const invoice = await storage.getInvoice(Number(req.params.id));
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
-    const items = invoice.items.map((item: any) => ({ ...item, job: item.job }));
-
+    const items = (invoice as any).items.map((it: any) => ({ ...it, job: it.job }));
     const pdfBytes = await generateInvoicePdf(invoice as any, (invoice as any).company, items as any);
+
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=invoice-${invoice.invoiceNumber}.pdf`);
+    res.setHeader("Content-Disposition", `attachment; filename=invoice-${(invoice as any).invoiceNumber}.pdf`);
     res.send(Buffer.from(pdfBytes));
   });
 
@@ -290,7 +321,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const invoice = await storage.getInvoice(Number(req.params.id));
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
-    const items = (invoice as any).items.map((item: any) => ({ ...item, job: item.job }));
+    const items = (invoice as any).items.map((it: any) => ({ ...it, job: it.job }));
     const pdfBytes = await generateInvoicePdf(invoice as any, (invoice as any).company, items as any);
 
     const recipientEmail = (invoice as any).company?.email;
@@ -300,12 +331,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await transporter.sendMail({
         from: process.env.SMTP_FROM || '"Notprofi24.at" <noreply@notprofi24.at>',
         to: recipientEmail,
-        subject: `Rechnung ${invoice.monthYear} - ${invoice.invoiceNumber}`,
+        subject: `Rechnung ${invoice.monthYear} - ${(invoice as any).invoiceNumber}`,
         text: `Sehr geehrte Damen und Herren,\n\nanbei erhalten Sie die Abrechnung für ${invoice.monthYear}.\n\nMit freundlichen Grüßen,\nIhr Notprofi24.at Team`,
-        attachments: [{ filename: `invoice-${invoice.invoiceNumber}.pdf`, content: Buffer.from(pdfBytes) }],
+        attachments: [{ filename: `invoice-${(invoice as any).invoiceNumber}.pdf`, content: Buffer.from(pdfBytes) }],
       });
 
-      await storage.updateInvoice(invoice.id, { sentAt: new Date() } as any);
+      await storage.updateInvoice((invoice as any).id, { sentAt: new Date() } as any);
       res.json({ success: true, message: "Email sent successfully" });
     } catch (error: any) {
       console.error("Email sending failed:", error);
@@ -314,9 +345,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // === STATS ===
-  app.get(api.stats.dashboard.path, async (_req, res) => {
-    res.json(await storage.getStats());
-  });
+  app.get(api.stats.dashboard.path, async (_req, res) => res.json(await storage.getStats()));
 
   return httpServer;
 }

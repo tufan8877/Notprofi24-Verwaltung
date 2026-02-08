@@ -18,7 +18,9 @@ import {
   type InsertInvoice,
   type InvoiceItem,
 } from "@shared/schema";
-import { eq, desc, and, sql, between, gte, lt } from "drizzle-orm";
+import { eq, desc, and, sql, between } from "drizzle-orm";
+
+const VAT_RATE = 0.2; // 20% USt (AT)
 
 export interface IStorage {
   // Auth
@@ -67,10 +69,26 @@ export interface IStorage {
   updateJob(id: number, job: Partial<InsertJob>): Promise<Job>;
 
   // Invoices
-  getInvoices(): Promise<(Invoice & { company: Company | null })[]>;
+  getInvoices(): Promise<
+    (Invoice & {
+      company: Company | null;
+      itemCount: number;
+      totalNet: string; // Summe Netto aus invoiceItems.amount
+      vat: string; // 20% von totalNet
+      totalGross: string; // totalNet + vat
+    })[]
+  >;
+
   getInvoice(
     id: number
-  ): Promise<(Invoice & { company: Company | null; items: InvoiceItem[] }) | undefined>;
+  ): Promise<
+    | (Invoice & {
+        company: Company | null;
+        items: (InvoiceItem & { job: Job | null })[];
+      })
+    | undefined
+  >;
+
   createInvoice(invoice: InsertInvoice, items: { jobId: number; amount: number }[]): Promise<Invoice>;
   updateInvoice(id: number, invoice: Partial<InsertInvoice>): Promise<Invoice>;
 
@@ -85,9 +103,9 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   async getUserByEmail(email: string): Promise<{ email: string } | undefined> {
-    // Env Var Admin Auth
+    // ENV Auth
     if (email === process.env.ADMIN_EMAIL) {
-      return { email: process.env.ADMIN_EMAIL };
+      return { email: process.env.ADMIN_EMAIL as string };
     }
     return undefined;
   }
@@ -184,13 +202,39 @@ export class DatabaseStorage implements IStorage {
 
   // Invoices
   async getInvoices() {
-    return db.query.invoices.findMany({
+    // Wir laden invoices + company + items, damit wir zählen und Netto/USt/Brutto berechnen können
+    const rows = await db.query.invoices.findMany({
       orderBy: [desc(invoices.createdAt)],
       with: {
         company: true,
+        items: true,
       },
     });
+
+    return rows.map((inv: any) => {
+      const itemsArr: any[] = inv.items || [];
+      const itemCount = itemsArr.length;
+
+      // invoiceItems.amount ist numeric -> in TS oft string
+      const totalNetNum = itemsArr.reduce((sum: number, it: any) => sum + Number(it.amount || 0), 0);
+      const totalNet = Number(totalNetNum.toFixed(2));
+
+      const vatNum = totalNet * VAT_RATE;
+      const vat = Number(vatNum.toFixed(2));
+
+      const totalGrossNum = totalNet + vat;
+      const totalGross = Number(totalGrossNum.toFixed(2));
+
+      return {
+        ...inv,
+        itemCount,
+        totalNet: totalNet.toFixed(2),
+        vat: vat.toFixed(2),
+        totalGross: totalGross.toFixed(2),
+      };
+    });
   }
+
   async getInvoice(id: number) {
     return db.query.invoices.findFirst({
       where: eq(invoices.id, id),
@@ -202,8 +246,9 @@ export class DatabaseStorage implements IStorage {
           },
         },
       },
-    });
+    }) as any;
   }
+
   async createInvoice(invoice: InsertInvoice, items: { jobId: number; amount: number }[]) {
     const [newInvoice] = await db.insert(invoices).values(invoice).returning();
 
@@ -212,43 +257,46 @@ export class DatabaseStorage implements IStorage {
         items.map((item) => ({
           invoiceId: newInvoice.id,
           jobId: item.jobId,
-          amount: item.amount.toString(),
+          amount: item.amount.toString(), // numeric column akzeptiert string
         }))
       );
     }
 
     return newInvoice;
   }
+
   async updateInvoice(id: number, invoice: Partial<InsertInvoice>) {
     const [updated] = await db.update(invoices).set(invoice).where(eq(invoices.id, id)).returning();
     return updated;
   }
 
-  // ✅ Stats (fix: Monatsende korrekt, kein “00:00”-Bug)
+  // Stats
   async getStats() {
-    const [openJobs] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(jobs)
-      .where(eq(jobs.status, "open"));
+    const [openJobs] = await db.select({ count: sql<number>`count(*)` }).from(jobs).where(eq(jobs.status, "open"));
 
+    // Done jobs this month
     const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
     const [doneJobsMonth] = await db
       .select({ count: sql<number>`count(*)` })
       .from(jobs)
-      .where(and(eq(jobs.status, "done"), gte(jobs.dateTime, start), lt(jobs.dateTime, nextMonthStart)));
+      .where(and(eq(jobs.status, "done"), between(jobs.dateTime, startOfMonth, endOfMonth)));
 
     const [unpaidInvoices] = await db
       .select({ count: sql<number>`count(*)` })
       .from(invoices)
       .where(eq(invoices.status, "unpaid"));
 
+    // Summe der Rechnungen im Monat (DB Feld invoices.totalAmount)
+    // numeric kann als string kommen -> casten wir sauber
     const [revenue] = await db
-      .select({ total: sql<number>`coalesce(sum(total_amount), 0)` })
+      .select({
+        total: sql<number>`coalesce(sum(${invoices.totalAmount}), 0)`,
+      })
       .from(invoices)
-      .where(and(gte(invoices.createdAt, start), lt(invoices.createdAt, nextMonthStart)));
+      .where(between(invoices.createdAt, startOfMonth, endOfMonth));
 
     return {
       openJobs: Number(openJobs?.count || 0),

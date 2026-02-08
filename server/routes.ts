@@ -1,18 +1,22 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
-import { storage } from "./storage";
-import { api } from "@shared/routes";
 import session from "express-session";
 import MemoryStore from "memorystore";
-import { generateJobPdf, generateInvoicePdf } from "./pdf";
 import nodemailer from "nodemailer";
 import { startOfMonth, endOfMonth, parseISO } from "date-fns";
+import { and, eq, between, desc, sql } from "drizzle-orm";
+
+import { storage } from "./storage";
+import { api } from "@shared/routes";
+import { generateJobPdf, generateInvoicePdf } from "./pdf";
+
 import { db } from "./db";
 import { jobs, invoiceItems, invoices as invoicesTable } from "@shared/schema";
-import { and, eq, between, desc } from "drizzle-orm";
 
 const SessionStore = MemoryStore(session);
-const VAT_RATE = 0.2; // 20% USt (AT)
+
+const VAT_RATE = 0.2; // 20% USt
+const DEFAULT_FEE_NET = 49; // 49 Netto pro Einsatz
 
 // Types extension for session
 declare module "express-session" {
@@ -22,8 +26,62 @@ declare module "express-session" {
   }
 }
 
+async function recalcInvoiceTotals(invoiceId: number) {
+  // Summe Netto aus invoiceItems.amount (numeric -> in TS oft string)
+  const rows = await db
+    .select({
+      totalNet: sql<number>`coalesce(sum(${invoiceItems.amount}), 0)`,
+      count: sql<number>`coalesce(count(*), 0)`,
+    })
+    .from(invoiceItems)
+    .where(eq(invoiceItems.invoiceId, invoiceId));
+
+  const totalNet = Number(rows?.[0]?.totalNet ?? 0);
+  const vat = +(totalNet * VAT_RATE).toFixed(2);
+  const totalGross = +(totalNet + vat).toFixed(2);
+
+  await db
+    .update(invoicesTable)
+    .set({ totalAmount: totalGross.toFixed(2) }) // ✅ totalAmount = BRUTTO
+    .where(eq(invoicesTable.id, invoiceId));
+
+  return { totalNet, vat, totalGross, count: Number(rows?.[0]?.count ?? 0) };
+}
+
+async function mergeDuplicateInvoices(companyId: number, monthYear: string) {
+  // alle Rechnungen für Firma+Monat holen
+  const list = await db.query.invoices.findMany({
+    where: and(eq(invoicesTable.companyId, companyId), eq(invoicesTable.monthYear, monthYear)),
+    orderBy: [desc(invoicesTable.createdAt)],
+  });
+
+  if (list.length <= 1) {
+    return list[0] ?? null;
+  }
+
+  // wir behalten die NEUESTE als "Master"
+  const master = list[0];
+  const duplicates = list.slice(1);
+
+  // Alle invoiceItems der Dubletten auf Master umhängen
+  for (const dup of duplicates) {
+    await db
+      .update(invoiceItems)
+      .set({ invoiceId: master.id })
+      .where(eq(invoiceItems.invoiceId, dup.id));
+
+    // Dublette löschen
+    await db.delete(invoicesTable).where(eq(invoicesTable.id, dup.id));
+  }
+
+  // Totals neu rechnen
+  await recalcInvoiceTotals(master.id);
+
+  return master;
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  // Setup Session
+  // Sessions
   app.use(
     session({
       store: new SessionStore({ checkPeriod: 86400000 }),
@@ -37,7 +95,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     })
   );
 
-  // Email Transporter
+  // Nodemailer
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST || "smtp.example.com",
     port: Number(process.env.SMTP_PORT) || 587,
@@ -48,10 +106,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     },
   });
 
-  // Auth Middleware
   const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    if (req.session.isAdmin) next();
-    else res.status(401).json({ message: "Unauthorized" });
+    if (req.session.isAdmin) return next();
+    return res.status(401).json({ message: "Unauthorized" });
   };
 
   // Health
@@ -64,7 +121,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // === AUTH ===
+  // AUTH
   app.post(api.auth.login.path, async (req, res) => {
     const { email, password } = api.auth.login.input.parse(req.body);
 
@@ -81,8 +138,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get(api.auth.me.path, (req, res) => {
-    if (req.session.isAdmin) res.json({ email: req.session.userEmail });
-    else res.status(401).json({ message: "Unauthorized" });
+    if (req.session.isAdmin) return res.json({ email: req.session.userEmail });
+    return res.status(401).json({ message: "Unauthorized" });
   });
 
   // Protect all /api except login/logout/me/health
@@ -91,7 +148,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return requireAuth(req, res, next);
   });
 
-  // === PROPERTY MANAGERS ===
+  // PROPERTY MANAGERS
   app.get(api.propertyManagers.list.path, async (_req, res) => res.json(await storage.getPropertyManagers()));
   app.post(api.propertyManagers.create.path, async (req, res) => {
     const input = api.propertyManagers.create.input.parse(req.body);
@@ -106,7 +163,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(204).send();
   });
 
-  // === PRIVATE CUSTOMERS ===
+  // PRIVATE CUSTOMERS
   app.get(api.privateCustomers.list.path, async (_req, res) => res.json(await storage.getPrivateCustomers()));
   app.post(api.privateCustomers.create.path, async (req, res) => {
     const input = api.privateCustomers.create.input.parse(req.body);
@@ -121,7 +178,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(204).send();
   });
 
-  // === COMPANIES ===
+  // COMPANIES
   app.get(api.companies.list.path, async (_req, res) => res.json(await storage.getCompanies()));
   app.post(api.companies.create.path, async (req, res) => {
     const input = api.companies.create.input.parse(req.body);
@@ -136,20 +193,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.status(204).send();
   });
 
-  // === JOBS ===
+  // JOBS
   app.get(api.jobs.list.path, async (_req, res) => res.json(await storage.getJobs()));
-
   app.get(api.jobs.get.path, async (req, res) => {
     const data = await storage.getJob(Number(req.params.id));
     if (!data) return res.status(404).json({ message: "Job not found" });
     res.json(data);
   });
-
   app.post(api.jobs.create.path, async (req, res) => {
     const input = api.jobs.create.input.parse(req.body);
     res.status(201).json(await storage.createJob(input));
   });
-
   app.put(api.jobs.update.path, async (req, res) => {
     const input = api.jobs.update.input.parse(req.body);
     res.json(await storage.updateJob(Number(req.params.id), input));
@@ -192,17 +246,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // === INVOICES ===
+  // INVOICES
   app.get(api.invoices.list.path, async (_req, res) => res.json(await storage.getInvoices()));
 
-  // ✅ NEW: invoice detail (für "draufklicken" → alle Jobs anzeigen)
+  // Detail für Klick (zeigt alle invoiceItems + jobs)
   app.get("/api/invoices/:id", async (req, res) => {
     const inv = await storage.getInvoice(Number(req.params.id));
     if (!inv) return res.status(404).json({ message: "Invoice not found" });
     res.json(inv);
   });
 
-  // ✅ WICHTIG: 1 Rechnung pro Firma+Monat (anhängen statt neu)
+  // ✅ Generieren: 1 Rechnung pro Firma+Monat (merge + append)
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
 
@@ -210,10 +264,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = startOfMonth(date);
     const end = endOfMonth(date);
 
-    // Provision pro Einsatz NETTO aus Settings (Fallback 49)
+    // Fee Netto (Settings fallback 49)
     const settings: any = await (storage as any).getSettings?.().catch(() => null);
-    const feeNet = Number(settings?.standardProvision ?? 49);
-    const feeGross = +(feeNet * (1 + VAT_RATE)).toFixed(2);
+    const feeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
 
     // 1) DONE Jobs im Zeitraum
     const doneJobs = await db
@@ -226,78 +279,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     // 2) Schon fakturierte Jobs raus
-    const existingItems = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
-    const alreadyInvoicedIds = new Set(existingItems.map((i) => i.jobId));
-    const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoicedIds.has(j.id));
+    const existing = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
+    const alreadyInvoiced = new Set(existing.map((x) => x.jobId));
+    const jobsToInvoice = doneJobs.filter((j) => !alreadyInvoiced.has(j.id));
 
     if (jobsToInvoice.length === 0) {
-      return res.json({ generatedCount: 0, message: "All done jobs for this month are already invoiced" });
+      // trotzdem: falls alte Dubletten existieren, mergen wir sie beim Generate
+      // (weil du ja “nur 1 Rechnung sehen” willst)
+      const companiesInMonth = [...new Set(doneJobs.map((j) => j.companyId))];
+      for (const cid of companiesInMonth) {
+        await mergeDuplicateInvoices(cid, monthYear);
+      }
+      return res.json({ generatedCount: 0, message: "No new jobs to invoice. Duplicates (if any) were merged." });
     }
 
     // 3) Gruppieren nach Firma
-    const jobsByCompany = new Map<number, typeof jobsToInvoice>();
+    const byCompany = new Map<number, typeof jobsToInvoice>();
     for (const job of jobsToInvoice) {
-      if (!jobsByCompany.has(job.companyId)) jobsByCompany.set(job.companyId, []);
-      jobsByCompany.get(job.companyId)!.push(job);
+      if (!byCompany.has(job.companyId)) byCompany.set(job.companyId, []);
+      byCompany.get(job.companyId)!.push(job);
     }
 
-    let touchedInvoices = 0;
+    let touched = 0;
 
-    for (const [companyId, companyJobs] of jobsByCompany.entries()) {
-      // ✅ Prüfen: existiert schon Rechnung für Monat + Firma?
-      const existingInvoice = await db.query.invoices.findFirst({
-        where: and(eq(invoicesTable.companyId, companyId), eq(invoicesTable.monthYear, monthYear)),
-        orderBy: [desc(invoicesTable.createdAt)],
-      });
+    for (const [companyId, companyJobs] of byCompany.entries()) {
+      // ✅ Dubletten mergen (wenn es schon 2-3 Rechnungen gibt)
+      let master = await mergeDuplicateInvoices(companyId, monthYear);
 
-      const addCount = companyJobs.length;
-      const addNet = +(addCount * feeNet).toFixed(2);
-      const addVat = +(addNet * VAT_RATE).toFixed(2);
-      const addGross = +(addNet + addVat).toFixed(2);
-
-      if (existingInvoice) {
-        // ✅ invoiceItems anhängen
-        await db.insert(invoiceItems).values(
-          companyJobs.map((j) => ({
-            invoiceId: existingInvoice.id,
-            jobId: j.id,
-            amount: feeNet.toString(), // NETTO
-          }))
-        );
-
-        // ✅ totalAmount (BRUTTO) erhöhen
-        const currentGross = Number(existingInvoice.totalAmount ?? 0);
-        const newGross = +(currentGross + addGross).toFixed(2);
-
-        await db
-          .update(invoicesTable)
-          .set({ totalAmount: newGross.toFixed(2) })
-          .where(eq(invoicesTable.id, existingInvoice.id));
-
-        touchedInvoices++;
-      } else {
-        // ✅ NEUE Rechnung erstellen (BRUTTO)
+      if (!master) {
+        // keine Rechnung vorhanden -> neu erstellen
         const invoiceNumber = `${monthYear.replace("-", "")}-${companyId}-${Date.now().toString().slice(-4)}`;
 
-        await storage.createInvoice(
+        const created = await storage.createInvoice(
           {
             invoiceNumber,
             monthYear,
             companyId,
             status: "unpaid",
-            totalAmount: addGross.toFixed(2), // ✅ BRUTTO
+            totalAmount: "0.00", // wird gleich recalc gesetzt
             createdAt: new Date(),
             sentAt: null,
             paidAt: null,
           } as any,
-          companyJobs.map((j) => ({ jobId: j.id, amount: feeNet }))
+          [] // items kommen unten
         );
 
-        touchedInvoices++;
+        master = created as any;
       }
+
+      // ✅ neue invoiceItems anhängen (NETTO)
+      await db.insert(invoiceItems).values(
+        companyJobs.map((j) => ({
+          invoiceId: (master as any).id,
+          jobId: j.id,
+          amount: feeNet.toFixed(2), // NETTO pro Einsatz
+        }))
+      );
+
+      // ✅ totals neu rechnen (setzt totalAmount=BRUTTO)
+      await recalcInvoiceTotals((master as any).id);
+
+      touched++;
     }
 
-    res.json({ generatedCount: touchedInvoices, message: `Updated/created ${touchedInvoices} invoices` });
+    res.json({ generatedCount: touched, message: `Updated/created ${touched} invoices` });
   });
 
   app.post(api.invoices.markPaid.path, async (req, res) => {
@@ -344,7 +389,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // === STATS ===
+  // STATS
   app.get(api.stats.dashboard.path, async (_req, res) => res.json(await storage.getStats()));
 
   return httpServer;

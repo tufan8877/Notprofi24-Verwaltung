@@ -21,11 +21,7 @@ import { useLocation } from "wouter";
 function statusBadge(status: string) {
   if (status === "done") return <Badge className="bg-green-600">Erledigt</Badge>;
   if (status === "canceled") return <Badge variant="destructive">Storniert</Badge>;
-  return (
-    <Badge variant="outline" className="text-orange-600 border-orange-200 bg-orange-50">
-      Offen
-    </Badge>
-  );
+  return <Badge variant="outline" className="text-orange-600 border-orange-200 bg-orange-50">Offen</Badge>;
 }
 
 function toDateTimeLocalValue(d: Date) {
@@ -37,22 +33,30 @@ function toDateTimeLocalValue(d: Date) {
   const mi = pad(d.getMinutes());
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
-
 function fromDateTimeLocalValue(v: string) {
   return new Date(v);
 }
 
-function getStatusFromUrl(): "all" | "open" | "done" | "canceled" {
+function readQuery() {
   const params = new URLSearchParams(window.location.search);
-  const s = (params.get("status") || "all").toLowerCase();
-  if (s === "open" || s === "done" || s === "canceled") return s;
-  return "all";
+  const status = (params.get("status") || "all").toLowerCase();
+  const companyId = params.get("companyId");
+  return {
+    status: (status === "open" || status === "done" || status === "canceled") ? status : "all",
+    companyId: companyId ? Number(companyId) : null,
+  } as { status: "all" | "open" | "done" | "canceled"; companyId: number | null };
 }
 
-function setStatusInUrl(setLocation: (path: string) => void, status: string) {
+function setQuery(setLocation: (path: string) => void, next: { status?: string; companyId?: number | null }) {
   const params = new URLSearchParams(window.location.search);
-  if (status === "all") params.delete("status");
-  else params.set("status", status);
+  if (next.status !== undefined) {
+    if (next.status === "all") params.delete("status");
+    else params.set("status", next.status);
+  }
+  if (next.companyId !== undefined) {
+    if (!next.companyId) params.delete("companyId");
+    else params.set("companyId", String(next.companyId));
+  }
   const qs = params.toString();
   setLocation(qs ? `/jobs?${qs}` : "/jobs");
 }
@@ -62,46 +66,48 @@ export default function Jobs() {
   const { data: companies } = useCompanies();
   const { data: managers } = usePropertyManagers();
   const { data: customers } = usePrivateCustomers();
-
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
   const [isOpen, setIsOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
 
-  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "done" | "canceled">(getStatusFromUrl());
+  const [filters, setFilters] = useState(readQuery());
 
-  // sync URL -> state wenn direkt aus Dashboard kommt
   useEffect(() => {
-    const onPop = () => setStatusFilter(getStatusFromUrl());
+    const onPop = () => setFilters(readQuery());
     window.addEventListener("popstate", onPop);
-    // initial
-    setStatusFilter(getStatusFromUrl());
+    setFilters(readQuery());
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   const counts = useMemo(() => {
     const all = jobs || [];
-    const open = all.filter((j: any) => j.status === "open").length;
-    const done = all.filter((j: any) => j.status === "done").length;
-    const canceled = all.filter((j: any) => j.status === "canceled").length;
-    return { open, done, canceled, all: all.length };
+    return {
+      all: all.length,
+      open: all.filter((j: any) => j.status === "open").length,
+      done: all.filter((j: any) => j.status === "done").length,
+      canceled: all.filter((j: any) => j.status === "canceled").length,
+    };
   }, [jobs]);
 
   const filteredJobs = useMemo(() => {
-    const all = jobs || [];
-    if (statusFilter === "all") return all;
-    return all.filter((j: any) => j.status === statusFilter);
-  }, [jobs, statusFilter]);
+    let list = jobs || [];
+    if (filters.companyId) list = list.filter((j: any) => j.companyId === filters.companyId);
+    if (filters.status !== "all") list = list.filter((j: any) => j.status === filters.status);
+    return list;
+  }, [jobs, filters]);
+
+  const companyName = useMemo(() => {
+    if (!filters.companyId) return null;
+    const c = (companies || []).find((x: any) => x.id === filters.companyId);
+    return c?.companyName ?? `Firma #${filters.companyId}`;
+  }, [filters.companyId, companies]);
 
   const columns = useMemo(
     () => [
       { header: "Job#", accessorKey: "jobNumber", className: "font-mono font-bold" },
-      {
-        header: "Datum",
-        accessorKey: "dateTime",
-        cell: (j: any) => (j.dateTime ? new Date(j.dateTime).toLocaleString("de-AT") : ""),
-      },
+      { header: "Datum", accessorKey: "dateTime", cell: (j: any) => (j.dateTime ? new Date(j.dateTime).toLocaleString("de-AT") : "") },
       { header: "Adresse", accessorKey: "serviceAddress" },
       { header: "Gewerk", accessorKey: "trade" },
       { header: "Tätigkeit", accessorKey: "activity" },
@@ -110,9 +116,7 @@ export default function Jobs() {
         header: "Kunde",
         accessorKey: "customerType",
         cell: (j: any) =>
-          j.customerType === "property_manager"
-            ? j.propertyManager?.name ?? "Hausverwaltung"
-            : j.privateCustomer?.name ?? "Privatkunde",
+          j.customerType === "property_manager" ? j.propertyManager?.name ?? "Hausverwaltung" : j.privateCustomer?.name ?? "Privatkunde",
       },
       { header: "Status", accessorKey: "status", cell: (j: any) => statusBadge(j.status) },
       {
@@ -133,34 +137,71 @@ export default function Jobs() {
     []
   );
 
-  const setFilter = (s: "all" | "open" | "done" | "canceled") => {
-    setStatusFilter(s);
-    setStatusInUrl(setLocation, s);
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-3xl font-display font-bold text-slate-900">Einsätze</h2>
           <p className="text-slate-500 mt-2">
-            Übersicht + Suche. Filter: <span className="font-semibold">{statusFilter}</span>
+            {companyName ? (
+              <span>
+                Filter: <span className="font-semibold">{companyName}</span> · Status: <span className="font-semibold">{filters.status}</span>
+              </span>
+            ) : (
+              <span>Status: <span className="font-semibold">{filters.status}</span></span>
+            )}
           </p>
         </div>
 
         <div className="flex gap-2 flex-wrap">
-          <Button variant={statusFilter === "all" ? "default" : "outline"} onClick={() => setFilter("all")}>
+          <Button
+            variant={filters.status === "all" ? "default" : "outline"}
+            onClick={() => {
+              setFilters((f) => ({ ...f, status: "all" }));
+              setQuery(setLocation, { status: "all" });
+            }}
+          >
             Alle ({counts.all})
           </Button>
-          <Button variant={statusFilter === "open" ? "default" : "outline"} onClick={() => setFilter("open")}>
+          <Button
+            variant={filters.status === "open" ? "default" : "outline"}
+            onClick={() => {
+              setFilters((f) => ({ ...f, status: "open" }));
+              setQuery(setLocation, { status: "open" });
+            }}
+          >
             Offen ({counts.open})
           </Button>
-          <Button variant={statusFilter === "done" ? "default" : "outline"} onClick={() => setFilter("done")}>
+          <Button
+            variant={filters.status === "done" ? "default" : "outline"}
+            onClick={() => {
+              setFilters((f) => ({ ...f, status: "done" }));
+              setQuery(setLocation, { status: "done" });
+            }}
+          >
             Erledigt ({counts.done})
           </Button>
-          <Button variant={statusFilter === "canceled" ? "default" : "outline"} onClick={() => setFilter("canceled")}>
+          <Button
+            variant={filters.status === "canceled" ? "default" : "outline"}
+            onClick={() => {
+              setFilters((f) => ({ ...f, status: "canceled" }));
+              setQuery(setLocation, { status: "canceled" });
+            }}
+          >
             Storniert ({counts.canceled})
           </Button>
+
+          {filters.companyId ? (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setFilters((f) => ({ ...f, companyId: null }));
+                setQuery(setLocation, { companyId: null });
+              }}
+            >
+              Firmenfilter entfernen
+            </Button>
+          ) : null}
 
           <Button
             onClick={() => {
@@ -184,7 +225,6 @@ export default function Jobs() {
           "activity",
           "status",
           "reportText",
-
           "company.companyName",
           "company.contactName",
           "company.phone",
@@ -192,13 +232,11 @@ export default function Jobs() {
           "company.address",
           "company.trades",
           "company.notes",
-
           "propertyManager.name",
           "propertyManager.address",
           "propertyManager.phone",
           "propertyManager.email",
           "propertyManager.notes",
-
           "privateCustomer.name",
           "privateCustomer.address",
           "privateCustomer.phone",
@@ -265,7 +303,6 @@ function JobDialog({
 
   useEffect(() => {
     if (!open) return;
-
     if (item) {
       form.reset({
         dateTime: item.dateTime ? new Date(item.dateTime) : new Date(),
@@ -362,9 +399,7 @@ function JobDialog({
                     <FormLabel>Status</FormLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Status wählen" />
-                        </SelectTrigger>
+                        <SelectTrigger><SelectValue placeholder="Status wählen" /></SelectTrigger>
                       </FormControl>
                       <SelectContent>
                         <SelectItem value="open">Offen</SelectItem>
@@ -384,9 +419,7 @@ function JobDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Einsatzadresse</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder="z.B. Musterstraße 12, 1010 Wien" />
-                  </FormControl>
+                  <FormControl><Input {...field} placeholder="z.B. Musterstraße 12, 1010 Wien" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )}
@@ -400,11 +433,7 @@ function JobDialog({
                   <FormItem>
                     <FormLabel>Gewerk</FormLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Gewerk wählen" />
-                        </SelectTrigger>
-                      </FormControl>
+                      <FormControl><SelectTrigger><SelectValue placeholder="Gewerk wählen" /></SelectTrigger></FormControl>
                       <SelectContent>
                         <SelectItem value="Installateur">Installateur</SelectItem>
                         <SelectItem value="Elektriker">Elektriker</SelectItem>
@@ -424,16 +453,10 @@ function JobDialog({
                   <FormItem>
                     <FormLabel>Betrieb</FormLabel>
                     <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Betrieb auswählen" />
-                        </SelectTrigger>
-                      </FormControl>
+                      <FormControl><SelectTrigger><SelectValue placeholder="Betrieb auswählen" /></SelectTrigger></FormControl>
                       <SelectContent>
                         {(companies || []).map((c) => (
-                          <SelectItem key={c.id} value={String(c.id)}>
-                            {c.companyName}
-                          </SelectItem>
+                          <SelectItem key={c.id} value={String(c.id)}>{c.companyName}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -451,11 +474,7 @@ function JobDialog({
                   <FormItem>
                     <FormLabel>Kundentyp</FormLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Kundentyp wählen" />
-                        </SelectTrigger>
-                      </FormControl>
+                      <FormControl><SelectTrigger><SelectValue placeholder="Kundentyp wählen" /></SelectTrigger></FormControl>
                       <SelectContent>
                         <SelectItem value="property_manager">Hausverwaltung</SelectItem>
                         <SelectItem value="private_customer">Privatkunde</SelectItem>
@@ -474,16 +493,10 @@ function JobDialog({
                     <FormItem>
                       <FormLabel>Hausverwaltung</FormLabel>
                       <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="HV auswählen" />
-                          </SelectTrigger>
-                        </FormControl>
+                        <FormControl><SelectTrigger><SelectValue placeholder="HV auswählen" /></SelectTrigger></FormControl>
                         <SelectContent>
                           {(managers || []).map((m) => (
-                            <SelectItem key={m.id} value={String(m.id)}>
-                              {m.name} — {m.phone}
-                            </SelectItem>
+                            <SelectItem key={m.id} value={String(m.id)}>{m.name} — {m.phone}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -499,16 +512,10 @@ function JobDialog({
                     <FormItem>
                       <FormLabel>Privatkunde</FormLabel>
                       <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Privatkunde auswählen" />
-                          </SelectTrigger>
-                        </FormControl>
+                        <FormControl><SelectTrigger><SelectValue placeholder="Privatkunde auswählen" /></SelectTrigger></FormControl>
                         <SelectContent>
                           {(customers || []).map((c) => (
-                            <SelectItem key={c.id} value={String(c.id)}>
-                              {c.name} — {c.phone}
-                            </SelectItem>
+                            <SelectItem key={c.id} value={String(c.id)}>{c.name} — {c.phone}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -525,9 +532,7 @@ function JobDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Tätigkeit / Problem</FormLabel>
-                  <FormControl>
-                    <Textarea rows={3} {...field} placeholder="z.B. Wasserrohrbruch, Sicherung fliegt..." />
-                  </FormControl>
+                  <FormControl><Textarea rows={3} {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )}
@@ -539,9 +544,7 @@ function JobDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Bericht / Dokumentation</FormLabel>
-                  <FormControl>
-                    <Textarea rows={4} {...field} placeholder="Was wurde gemacht? Ergebnis?..." />
-                  </FormControl>
+                  <FormControl><Textarea rows={4} {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )}

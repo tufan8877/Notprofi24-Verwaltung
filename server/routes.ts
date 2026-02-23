@@ -3,6 +3,8 @@ import type { Server } from "http";
 import session from "express-session";
 import MemoryStore from "memorystore";
 import nodemailer from "nodemailer";
+import fs from "fs/promises";
+import path from "path";
 import { startOfMonth, endOfMonth, parseISO } from "date-fns";
 import { and, eq, between, desc, sql, inArray } from "drizzle-orm";
 
@@ -17,9 +19,75 @@ const SessionStore = MemoryStore(session);
 
 const VAT_RATE = 0.2; // 20% USt
 const DEFAULT_FEE_NET = 49.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
-// NOTE: User-Wunsch: Storno soll auf Rechnung erscheinen, aber NICHT in die Summe einfließen.
-// Daher ist der Default 0.00 (kann über Settings überschrieben werden).
-const DEFAULT_CANCELLATION_FEE_NET = 0.0;
+const CANCELLATION_FEE_NET = 14.9; // Stornogebühr Netto
+
+// Settings werden als JSON-Datei gespeichert (einfach & ohne DB-Migration)
+const SETTINGS_PATH = path.join(process.cwd(), "data", "settings.json");
+
+type SettingsStore = {
+  companyName: string;
+  address: string;
+  uid: string;
+  emailFromName: string;
+  emailFromEmail: string;
+  // Standard-Provision/Referral-Fee (Netto) als Zahl
+  standardProvision: number;
+};
+
+const DEFAULT_SETTINGS: SettingsStore = {
+  companyName: "Notprofi24 GmbH",
+  address: "Musterstraße 1, 1010 Wien",
+  uid: "ATU12345678",
+  emailFromName: "Notprofi24 Admin",
+  emailFromEmail: "noreply@notprofi24.at",
+  standardProvision: 60,
+};
+
+function normalizeNumber(v: unknown, fallback: number) {
+  const n = Number(String(v ?? "").replace(",", "."));
+  return Number.isFinite(n) ? n : fallback;
+}
+
+async function readSettings(): Promise<SettingsStore> {
+  try {
+    const raw = await fs.readFile(SETTINGS_PATH, "utf-8");
+    const parsed = JSON.parse(raw ?? "{}");
+    return {
+      companyName: String(parsed.companyName ?? DEFAULT_SETTINGS.companyName),
+      address: String(parsed.address ?? DEFAULT_SETTINGS.address),
+      uid: String(parsed.uid ?? DEFAULT_SETTINGS.uid),
+      emailFromName: String(parsed.emailFromName ?? DEFAULT_SETTINGS.emailFromName),
+      emailFromEmail: String(parsed.emailFromEmail ?? DEFAULT_SETTINGS.emailFromEmail),
+      standardProvision: normalizeNumber(
+        parsed.standardProvision ?? parsed.defaultReferralFee,
+        DEFAULT_SETTINGS.standardProvision
+      ),
+    };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+async function writeSettings(next: Partial<SettingsStore> & { defaultReferralFee?: unknown }) {
+  const current = await readSettings();
+  const merged: SettingsStore = {
+    ...current,
+    ...next,
+    companyName: String(next.companyName ?? current.companyName),
+    address: String(next.address ?? current.address),
+    uid: String(next.uid ?? current.uid),
+    emailFromName: String(next.emailFromName ?? current.emailFromName),
+    emailFromEmail: String(next.emailFromEmail ?? current.emailFromEmail),
+    standardProvision: normalizeNumber(
+      (next as any).standardProvision ?? (next as any).defaultReferralFee,
+      current.standardProvision
+    ),
+  };
+
+  await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
+  await fs.writeFile(SETTINGS_PATH, JSON.stringify(merged, null, 2), "utf-8");
+  return merged;
+}
 
 // Status-Mapping (je nach Projekt – hier die üblichen Strings)
 const STATUS_OPEN = "open";
@@ -42,18 +110,14 @@ function isCancelledStatus(status: string) {
 }
 
 async function recalcInvoiceTotals(invoiceId: number) {
-  // Summe Netto aus invoiceItems.amount
-  // IMPORTANT: Storno/Cancelled-Aufträge sollen zwar als Position erscheinen,
-  // aber NICHT in die Gesamtsumme eingerechnet werden.
-  // Deshalb wird hier die Summe über invoiceItems JOIN jobs gebildet und
-  // cancelled/storniert/canceled ausgeschlossen.
+  // Summe Netto: stornierte Jobs werden NICHT in die Summe eingerechnet
   const rows = await db
     .select({
-      totalNet: sql<number>`coalesce(sum(case when ${jobs.status} in ('cancelled','storniert','canceled') then 0 else ${invoiceItems.amount} end), 0)`,
+      totalNet: sql<number>`coalesce(sum(case when ${jobs.status} in ('cancelled','storniert') then 0 else ${invoiceItems.amount} end), 0)`,
       count: sql<number>`coalesce(count(*), 0)`,
     })
     .from(invoiceItems)
-    .innerJoin(jobs, eq(invoiceItems.jobId, jobs.id))
+    .innerJoin(jobs, eq(jobs.id, invoiceItems.jobId))
     .where(eq(invoiceItems.invoiceId, invoiceId));
 
   const totalNet = Number(rows?.[0]?.totalNet ?? 0);
@@ -62,7 +126,7 @@ async function recalcInvoiceTotals(invoiceId: number) {
 
   await db
     .update(invoicesTable)
-    .set({ totalAmount: totalGross.toFixed(2) }) // ✅ totalAmount = BRUTTO
+    .set({ totalAmount: totalGross.toFixed(2) }) // totalAmount = BRUTTO
     .where(eq(invoicesTable.id, invoiceId));
 
   return { totalNet, vat, totalGross, count: Number(rows?.[0]?.count ?? 0) };
@@ -121,45 +185,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.status(401).json({ message: "Unauthorized" });
   };
 
-  // SETTINGS
-  // Minimal API, damit das Admin-Panel Werte speichern/auslesen kann.
-  // Persistenz liegt in storage.updateSettings (aktuell Stub; kann später auf DB umgestellt werden).
-  app.get("/api/settings", requireAuth, async (_req, res) => {
-    const s = await (storage as any).getSettings?.().catch(() => null);
-    res.json(
-      s ?? {
-        companyName: "Notprofi24",
-        address: "",
-        uid: "",
-        standardProvision: DEFAULT_FEE_NET,
-        cancellationFeeNet: DEFAULT_CANCELLATION_FEE_NET,
-        vatRate: 20,
-      }
-    );
-  });
-
-  app.put("/api/settings", requireAuth, async (req, res) => {
-    // Accept both old + new keys for backwards compatibility
-    const body = req.body ?? {};
-    const payload = {
-      companyName: body.companyName,
-      address: body.address,
-      uid: body.uid,
-      // allow using either name
-      standardProvision: body.standardProvision ?? body.defaultReferralFee,
-      cancellationFeeNet: body.cancellationFeeNet ?? body.cancelFeeNet,
-      vatRate: body.vatRate,
-      // keep any other keys as-is
-      ...body,
-    };
-    const updated = await (storage as any).updateSettings?.(payload).catch(() => payload);
-    res.json(updated);
-  });
-
   app.get("/api/health", async (_req, res) => {
     try {
       await storage.getStats();
       res.json({ ok: true, db: true });
+
+  // SETTINGS (Admin)
+  app.get("/api/settings", requireAuth, async (_req, res) => {
+    const s = await readSettings();
+    res.json({
+      ...s,
+      // Alias für ältere Frontends
+      defaultReferralFee: s.standardProvision,
+    });
+  });
+
+  app.put("/api/settings", requireAuth, async (req, res) => {
+    const saved = await writeSettings(req.body ?? {});
+    res.json({
+      ...saved,
+      defaultReferralFee: saved.standardProvision,
+    });
+  });
     } catch {
       res.json({ ok: true, db: false });
     }
@@ -299,8 +346,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(inv);
   });
 
-  // ✅ Generieren: open + done + storniert
-  // WICHTIG: Storno soll auf Rechnung erscheinen, aber standardmäßig NICHT in die Summe einfließen.
+  // ✅ Generieren: open + done + storniert, storniert = 14.90 netto
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
 
@@ -309,13 +355,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const end = endOfMonth(date);
 
     const settings: any = await (storage as any).getSettings?.().catch(() => null);
-
-    // Backwards compatibility:
-    // - Manche Builds nutzen "defaultReferralFee" statt "standardProvision".
-    const standardFeeNet = Number(settings?.standardProvision ?? settings?.defaultReferralFee ?? DEFAULT_FEE_NET);
-
-    // Storno-Betrag: Default 0.00 (User-Wunsch). Kann in Settings gesetzt werden.
-    const cancellationFeeNet = Number(settings?.cancellationFeeNet ?? settings?.cancelFeeNet ?? DEFAULT_CANCELLATION_FEE_NET);
+    const standardFeeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
 
     // Alle Jobs, die in die Abrechnung dürfen (open/done/cancelled/storniert)
     const jobsInMonth = await db
@@ -371,7 +411,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (newJobsForCompany.length > 0) {
         await db.insert(invoiceItems).values(
           newJobsForCompany.map((j) => {
-            const feeNet = isCancelledStatus(String(j.status)) ? cancellationFeeNet : standardFeeNet;
+            const feeNet = isCancelledStatus(String(j.status)) ? 0 : standardFeeNet;
             return {
               invoiceId: (master as any).id,
               jobId: j.id,

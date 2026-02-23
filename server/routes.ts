@@ -17,7 +17,9 @@ const SessionStore = MemoryStore(session);
 
 const VAT_RATE = 0.2; // 20% USt
 const DEFAULT_FEE_NET = 49.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
-const CANCELLATION_FEE_NET = 14.9; // Stornogebühr Netto
+// NOTE: User-Wunsch: Storno soll auf Rechnung erscheinen, aber NICHT in die Summe einfließen.
+// Daher ist der Default 0.00 (kann über Settings überschrieben werden).
+const DEFAULT_CANCELLATION_FEE_NET = 0.0;
 
 // Status-Mapping (je nach Projekt – hier die üblichen Strings)
 const STATUS_OPEN = "open";
@@ -41,12 +43,17 @@ function isCancelledStatus(status: string) {
 
 async function recalcInvoiceTotals(invoiceId: number) {
   // Summe Netto aus invoiceItems.amount
+  // IMPORTANT: Storno/Cancelled-Aufträge sollen zwar als Position erscheinen,
+  // aber NICHT in die Gesamtsumme eingerechnet werden.
+  // Deshalb wird hier die Summe über invoiceItems JOIN jobs gebildet und
+  // cancelled/storniert/canceled ausgeschlossen.
   const rows = await db
     .select({
-      totalNet: sql<number>`coalesce(sum(${invoiceItems.amount}), 0)`,
+      totalNet: sql<number>`coalesce(sum(case when ${jobs.status} in ('cancelled','storniert','canceled') then 0 else ${invoiceItems.amount} end), 0)`,
       count: sql<number>`coalesce(count(*), 0)`,
     })
     .from(invoiceItems)
+    .innerJoin(jobs, eq(invoiceItems.jobId, jobs.id))
     .where(eq(invoiceItems.invoiceId, invoiceId));
 
   const totalNet = Number(rows?.[0]?.totalNet ?? 0);
@@ -113,6 +120,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (req.session.isAdmin) return next();
     return res.status(401).json({ message: "Unauthorized" });
   };
+
+  // SETTINGS
+  // Minimal API, damit das Admin-Panel Werte speichern/auslesen kann.
+  // Persistenz liegt in storage.updateSettings (aktuell Stub; kann später auf DB umgestellt werden).
+  app.get("/api/settings", requireAuth, async (_req, res) => {
+    const s = await (storage as any).getSettings?.().catch(() => null);
+    res.json(
+      s ?? {
+        companyName: "Notprofi24",
+        address: "",
+        uid: "",
+        standardProvision: DEFAULT_FEE_NET,
+        cancellationFeeNet: DEFAULT_CANCELLATION_FEE_NET,
+        vatRate: 20,
+      }
+    );
+  });
+
+  app.put("/api/settings", requireAuth, async (req, res) => {
+    // Accept both old + new keys for backwards compatibility
+    const body = req.body ?? {};
+    const payload = {
+      companyName: body.companyName,
+      address: body.address,
+      uid: body.uid,
+      // allow using either name
+      standardProvision: body.standardProvision ?? body.defaultReferralFee,
+      cancellationFeeNet: body.cancellationFeeNet ?? body.cancelFeeNet,
+      vatRate: body.vatRate,
+      // keep any other keys as-is
+      ...body,
+    };
+    const updated = await (storage as any).updateSettings?.(payload).catch(() => payload);
+    res.json(updated);
+  });
 
   app.get("/api/health", async (_req, res) => {
     try {
@@ -257,7 +299,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(inv);
   });
 
-  // ✅ Generieren: open + done + storniert, storniert = 14.90 netto
+  // ✅ Generieren: open + done + storniert
+  // WICHTIG: Storno soll auf Rechnung erscheinen, aber standardmäßig NICHT in die Summe einfließen.
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
 
@@ -266,7 +309,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const end = endOfMonth(date);
 
     const settings: any = await (storage as any).getSettings?.().catch(() => null);
-    const standardFeeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
+
+    // Backwards compatibility:
+    // - Manche Builds nutzen "defaultReferralFee" statt "standardProvision".
+    const standardFeeNet = Number(settings?.standardProvision ?? settings?.defaultReferralFee ?? DEFAULT_FEE_NET);
+
+    // Storno-Betrag: Default 0.00 (User-Wunsch). Kann in Settings gesetzt werden.
+    const cancellationFeeNet = Number(settings?.cancellationFeeNet ?? settings?.cancelFeeNet ?? DEFAULT_CANCELLATION_FEE_NET);
 
     // Alle Jobs, die in die Abrechnung dürfen (open/done/cancelled/storniert)
     const jobsInMonth = await db
@@ -322,7 +371,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (newJobsForCompany.length > 0) {
         await db.insert(invoiceItems).values(
           newJobsForCompany.map((j) => {
-            const feeNet = isCancelledStatus(String(j.status)) ? CANCELLATION_FEE_NET : standardFeeNet;
+            const feeNet = isCancelledStatus(String(j.status)) ? cancellationFeeNet : standardFeeNet;
             return {
               invoiceId: (master as any).id,
               jobId: j.id,

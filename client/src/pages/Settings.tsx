@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 type SettingsDto = {
   companyName?: string;
@@ -27,23 +28,18 @@ export default function Settings() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  const [form, setForm] = useState<Required<SettingsDto>>({
+  const [form, setForm] = useState({
     companyName: "",
     address: "",
     uid: "",
     emailFromName: "",
     emailFromEmail: "",
     standardProvision: 0,
-    defaultReferralFee: 0,
   });
 
+  // ✅ QueryKey muss eine URL sein, damit getQueryFn() korrekt funktioniert
   const settingsQuery = useQuery<SettingsDto>({
-    queryKey: ["settings"],
-    queryFn: async () => {
-      const res = await fetch("/api/settings", { method: "GET" });
-      if (!res.ok) throw new Error("Konnte Einstellungen nicht laden");
-      return await res.json();
-    },
+    queryKey: ["/api/settings"],
     staleTime: 0,
   });
 
@@ -59,39 +55,26 @@ export default function Settings() {
       emailFromName: d.emailFromName ?? "",
       emailFromEmail: d.emailFromEmail ?? "",
       standardProvision: prov,
-      defaultReferralFee: prov,
     });
   }, [settingsQuery.data]);
 
   const saveMutation = useMutation({
-    mutationFn: async (payload: SettingsDto) => {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || "Speichern fehlgeschlagen");
-      }
+    mutationFn: async () => {
+      const payload: SettingsDto = {
+        companyName: form.companyName,
+        address: form.address,
+        uid: form.uid,
+        emailFromName: form.emailFromName,
+        emailFromEmail: form.emailFromEmail,
+        standardProvision: form.standardProvision,
+      };
+
+      const res = await apiRequest("PUT", "/api/settings", payload); // ✅ credentials: include
       return (await res.json()) as SettingsDto;
     },
-    onSuccess: async (data) => {
-      await qc.invalidateQueries({ queryKey: ["settings"] });
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["/api/settings"] });
       toast({ title: "Gespeichert", description: "Einstellungen wurden gespeichert." });
-
-      // ensure UI shows saved values
-      const prov = toNumber(data.standardProvision ?? data.defaultReferralFee);
-      setForm((f) => ({
-        ...f,
-        companyName: data.companyName ?? f.companyName,
-        address: data.address ?? f.address,
-        uid: data.uid ?? f.uid,
-        emailFromName: data.emailFromName ?? f.emailFromName,
-        emailFromEmail: data.emailFromEmail ?? f.emailFromEmail,
-        standardProvision: prov,
-        defaultReferralFee: prov,
-      }));
     },
     onError: (err: any) => {
       toast({
@@ -102,7 +85,7 @@ export default function Settings() {
     },
   });
 
-  const isLoading = settingsQuery.isLoading || settingsQuery.isFetching;
+  const isBusy = settingsQuery.isLoading || settingsQuery.isFetching || saveMutation.isPending;
 
   return (
     <div className="space-y-8 max-w-4xl">
@@ -116,70 +99,42 @@ export default function Settings() {
           <CardTitle>Stammdaten Notprofi24</CardTitle>
           <CardDescription>Diese Daten erscheinen auf den Rechnungen</CardDescription>
         </CardHeader>
-
         <CardContent className="space-y-4">
           <div className="grid gap-2">
             <Label>Firmenname</Label>
             <Input
               value={form.companyName}
               onChange={(e) => setForm((f) => ({ ...f, companyName: e.target.value }))}
-              placeholder="z.B. Notprofi24 GmbH"
             />
           </div>
 
           <div className="grid gap-2">
             <Label>Adresse</Label>
-            <Input
-              value={form.address}
-              onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))}
-              placeholder="z.B. Musterstraße 1, 1010 Wien"
-            />
+            <Input value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
               <Label>UID-Nummer</Label>
-              <Input
-                value={form.uid}
-                onChange={(e) => setForm((f) => ({ ...f, uid: e.target.value }))}
-                placeholder="z.B. ATU12345678"
-              />
+              <Input value={form.uid} onChange={(e) => setForm((f) => ({ ...f, uid: e.target.value }))} />
             </div>
 
             <div className="grid gap-2">
-              <Label>Standard Provision (Netto €)</Label>
+              <Label>Standard Provision (€)</Label>
               <Input
                 inputMode="decimal"
                 value={String(form.standardProvision)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setForm((f) => ({
-                    ...f,
-                    standardProvision: v,
-                    defaultReferralFee: v,
-                  }));
-                }}
-                placeholder="z.B. 49"
+                onChange={(e) => setForm((f) => ({ ...f, standardProvision: toNumber(e.target.value) }))}
               />
             </div>
           </div>
 
           <Button
             className="mt-4"
-            disabled={saveMutation.isPending || isLoading}
-            onClick={() =>
-              saveMutation.mutate({
-                companyName: form.companyName,
-                address: form.address,
-                uid: form.uid,
-                emailFromName: form.emailFromName,
-                emailFromEmail: form.emailFromEmail,
-                standardProvision: toNumber(form.standardProvision),
-                defaultReferralFee: toNumber(form.standardProvision),
-              })
-            }
+            disabled={isBusy}
+            onClick={() => saveMutation.mutate()}
           >
-            {saveMutation.isPending ? "Speichert..." : "Speichern"}
+            {isBusy ? "Speichere..." : "Speichern"}
           </Button>
         </CardContent>
       </Card>
@@ -189,38 +144,25 @@ export default function Settings() {
           <CardTitle>E-Mail Einstellungen</CardTitle>
           <CardDescription>Konfiguration für automatische E-Mails</CardDescription>
         </CardHeader>
-
         <CardContent className="space-y-4">
           <div className="grid gap-2">
             <Label>Absender Name</Label>
             <Input
               value={form.emailFromName}
               onChange={(e) => setForm((f) => ({ ...f, emailFromName: e.target.value }))}
-              placeholder="z.B. Notprofi24 Admin"
             />
           </div>
-
           <div className="grid gap-2">
             <Label>Absender E-Mail</Label>
             <Input
               value={form.emailFromEmail}
               onChange={(e) => setForm((f) => ({ ...f, emailFromEmail: e.target.value }))}
-              placeholder="z.B. noreply@notprofi24.at"
             />
           </div>
-
-          <div className="flex gap-3">
-            <Button
-              variant="outline"
-              disabled={isLoading}
-              onClick={async () => {
-                // optional: simple ping - keeps UI consistent even without backend test endpoint
-                toast({ title: "Info", description: "Test-Email ist in dieser Version nicht implementiert." });
-              }}
-            >
-              Test-Email senden
-            </Button>
-          </div>
+          {/* Test-Mail: Backend-Route fehlt aktuell. Wenn du willst, baue ich dir die Route ein. */}
+          <Button variant="outline" disabled>
+            Test-Email senden
+          </Button>
         </CardContent>
       </Card>
     </div>

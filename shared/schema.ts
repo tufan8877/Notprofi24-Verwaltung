@@ -155,3 +155,41 @@ export type InvoiceItem = typeof invoiceItems.$inferSelect;
 export type CreateJobRequest = InsertJob;
 export type UpdateJobRequest = Partial<InsertJob>;
 export type GenerateInvoicesRequest = { monthYear: string };
+
+
+// === Liegenschaften pro Hausverwaltung ===
+// Separat von der Hausverwaltung: eine Verwaltung betreut mehrere Objekte.
+export const properties = pgTable("properties", {
+  id: serial("id").primaryKey(),
+  propertyManagerId: integer("property_manager_id").references(() => propertyManagers.id).notNull(),
+  name: text("name"),
+  address: text("address").notNull(),
+  emergencyInstructions: text("emergency_instructions"),
+  contactPhone: text("contact_phone"),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// === Notrufe: auch Anrufe ohne kostenpflichtigen Einsatz erfassen ===
+export const emergencyCalls = pgTable("emergency_calls", {
+  id: serial("id").primaryKey(),
+  propertyManagerId: integer("property_manager_id").references(() => propertyManagers.id),
+  propertyId: integer("property_id").references(() => properties.id),
+  jobId: integer("job_id").references(() => jobs.id),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+  callerName: text("caller_name"),
+  callerPhone: text("caller_phone"),
+  serviceAddress: text("service_address"),
+  issueType: text("issue_type").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("received"),
+  resolution: text("resolution"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPropertySchema = createInsertSchema(properties).omit({ id: true, createdAt: true });
+export const insertEmergencyCallSchema = createInsertSchema(emergencyCalls).omit({ id: true, createdAt: true });
+export type Property = typeof properties.$inferSelect;
+export type EmergencyCall = typeof emergencyCalls.$inferSelect;
+export type InsertProperty = z.infer<typeof insertPropertySchema>;
+export type InsertEmergencyCall = z.infer<typeof insertEmergencyCallSchema>;

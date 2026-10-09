@@ -18,7 +18,7 @@ import { jobs, invoiceItems, invoices as invoicesTable } from "@shared/schema";
 const SessionStore = MemoryStore(session);
 
 const VAT_RATE = 0.2; // 20% USt
-const DEFAULT_FEE_NET = 49.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
+const DEFAULT_FEE_NET = 59.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
 const CANCELLATION_FEE_NET = 14.9; // Stornogebühr Netto
 
 // Settings werden als JSON-Datei gespeichert (einfach & ohne DB-Migration)
@@ -40,7 +40,7 @@ const DEFAULT_SETTINGS: SettingsStore = {
   uid: "ATU12345678",
   emailFromName: "Notprofi24 Admin",
   emailFromEmail: "noreply@notprofi24.at",
-  standardProvision: 60,
+  standardProvision: 59,
 };
 
 function normalizeNumber(v: unknown, fallback: number) {

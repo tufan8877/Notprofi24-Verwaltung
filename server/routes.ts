@@ -434,6 +434,66 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ generatedCount: touched, message: `Updated/created ${touched} invoices` });
   });
 
+  // Wöchentliche Abrechnung: ISO-Kalenderwoche (Montag bis Sonntag).
+  // Erstellt pro Betrieb und Kalenderwoche genau eine Rechnung, ohne bestehende
+  // bezahlte/versandte Rechnungen zu verändern.
+  app.post("/api/invoices/generate-weekly", async (req, res) => {
+    const parsed = /^([0-9]{4})-W([0-9]{2})$/.exec(String(req.body?.week ?? ""));
+    if (!parsed) return res.status(400).json({ message: "Kalenderwoche im Format JJJJ-Www erforderlich" });
+    const year = Number(parsed[1]);
+    const week = Number(parsed[2]);
+    if (week < 1 || week > 53) return res.status(400).json({ message: "Ungültige Kalenderwoche" });
+    // ISO week 1 contains January 4th.
+    const jan4 = new Date(Date.UTC(year, 0, 4));
+    const monday = new Date(jan4);
+    monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7) + (week - 1) * 7);
+    const isoWeekYear = (date: Date) => {
+      const thursday = new Date(date);
+      thursday.setUTCDate(date.getUTCDate() + 3);
+      return thursday.getUTCFullYear();
+    };
+    if (isoWeekYear(monday) !== year) return res.status(400).json({ message: "Kalenderwoche existiert nicht" });
+    const end = new Date(monday);
+    end.setUTCDate(end.getUTCDate() + 7);
+    const period = parsed[0];
+    const eligible = await db.select().from(jobs).where(
+      and(sql`${jobs.dateTime} >= ${monday} AND ${jobs.dateTime} < ${end}`,
+          inArray(jobs.status, ["done", "erledigt"]))
+    );
+    const assigned = eligible.filter(j => j.companyId !== null);
+    const existing = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
+    const used = new Set(existing.map(i => i.jobId));
+    const pending = assigned.filter(j => !used.has(j.id));
+    const companyIds = [...new Set(pending.map(j => j.companyId!))];
+    let generatedCount = 0;
+    for (const companyId of companyIds) {
+      const items = pending.filter(j => j.companyId === companyId);
+      if (!items.length) continue;
+      const previous = await db.select().from(invoicesTable).where(
+        and(eq(invoicesTable.companyId, companyId), eq(invoicesTable.monthYear, period))
+      );
+      if (previous.length) continue; // never modify an issued invoice
+      await db.transaction(async tx => {
+        const [invoice] = await tx.insert(invoicesTable).values({
+          invoiceNumber: `TEMP-${year}-${week}-${companyId}-${Date.now()}`,
+          monthYear: period, companyId, status: "unpaid", totalAmount: "0.00"
+        }).returning();
+        await tx.update(invoicesTable).set({
+          invoiceNumber: `NP24-${year}-${String(invoice.id).padStart(6, "0")}`
+        }).where(eq(invoicesTable.id, invoice.id));
+        await tx.insert(invoiceItems).values(items.map(job => ({
+          invoiceId: invoice.id, jobId: job.id, amount: String(job.referralFee ?? "59")
+        })));
+        const netCents = items.reduce((sum, job) => sum + Math.round(Number(job.referralFee ?? "59") * 100), 0);
+        const grossCents = netCents + Math.round(netCents * VAT_RATE);
+        await tx.update(invoicesTable).set({ totalAmount: (grossCents / 100).toFixed(2) })
+          .where(eq(invoicesTable.id, invoice.id));
+      });
+      generatedCount++;
+    }
+    res.json({ generatedCount, message: `${generatedCount} Wochenabrechnungen erstellt` });
+  });
+
   app.post(api.invoices.markPaid.path, async (req, res) => {
     const data = await storage.updateInvoice(Number(req.params.id), { status: "paid", paidAt: new Date() } as any);
     res.json(data);

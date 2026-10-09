@@ -258,7 +258,7 @@ export async function generateInvoicePdf(
   page.drawText(`€ ${totalGross.toFixed(2)}`, { x: width - margin - 70, y, size: 12, font: boldFont });
   y -= 35;
 
-  page.drawText("Vermittlungsgebühr Notprofi24.at: 49,00 € netto pro vermitteltem Auftrag + USt.", {
+  page.drawText("Vermittlungsgebühr Notprofi24.at: 59,00 € netto pro vermitteltem Auftrag + 20 % USt.", {
     x: margin,
     y,
     size: 10,

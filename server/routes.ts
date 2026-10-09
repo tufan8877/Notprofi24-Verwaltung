@@ -415,7 +415,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (newJobsForCompany.length > 0) {
         await db.insert(invoiceItems).values(
           newJobsForCompany.map((j) => {
-            const feeNet = isCancelledStatus(String(j.status)) ? 0 : standardFeeNet;
+            const feeNet = isCancelledStatus(String(j.status)) ? 0 : Number(j.referralFee ?? standardFeeNet);
             return {
               invoiceId: (master as any).id,
               jobId: j.id,

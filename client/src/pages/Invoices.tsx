@@ -122,6 +122,33 @@ export default function InvoicesPage() {
   // Month selection for generating invoices
   const [monthYear, setMonthYear] = useState<string>(currentMonthYYYYMM());
 
+  const [week, setWeek] = useState(() => {
+    const today = new Date();
+    const day = (today.getDay() + 6) % 7;
+    const thursday = new Date(today);
+    thursday.setDate(today.getDate() - day + 3);
+    const first = new Date(thursday.getFullYear(), 0, 4);
+    const firstDay = (first.getDay() + 6) % 7;
+    const weekNumber = 1 + Math.round((thursday.getTime() - first.getTime() + firstDay * 86400000) / 604800000);
+    return `${thursday.getFullYear()}-W${String(weekNumber).padStart(2, "0")}`;
+  });
+  const [weeklyBusy, setWeeklyBusy] = useState(false);
+  const [weeklyMessage, setWeeklyMessage] = useState("");
+  async function generateWeekly() {
+    setWeeklyBusy(true); setWeeklyMessage("");
+    try {
+      const response = await fetch("/api/invoices/generate-weekly", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ week })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || "Fehler");
+      setWeeklyMessage(data.message);
+      await qc.invalidateQueries({ queryKey: ["invoices"] });
+    } catch (e: any) { setWeeklyMessage(e.message); }
+    finally { setWeeklyBusy(false); }
+  }
+
   // Search & selection
   const [search, setSearch] = useState<string>("");
   const [selected, setSelected] = useState<Invoice | null>(null);
@@ -296,14 +323,14 @@ export default function InvoicesPage() {
   // Net = sum(items.amount)
   // VAT 20% = net*0.2
   // Gross = net + vat
-  // (Your requirement: 49 netto + 20% = 58.80 brutto per job; Storno 14.90 netto + 20%)
+  // (Your requirement: 59 netto + 20% = 70.80 brutto per job; Storno 14.90 netto + 20%)
   return (
     <div className="p-4 space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Abrechnung</h1>
           <p className="text-sm text-muted-foreground">
-            Monatliche Provisionsabrechnungen für Partner (zusammengezählt)
+            Provisionsabrechnungen für Partner (wöchentlich oder bisher monatlich)
           </p>
         </div>
 
@@ -338,6 +365,11 @@ export default function InvoicesPage() {
         </Card>
       </div>
 
+      <div className="rounded-lg border bg-white p-4 flex flex-wrap items-end gap-3">
+        <div><label className="block text-sm font-semibold mb-1">Wöchentliche Abrechnung (Mo–So)</label><Input type="week" value={week} onChange={e => setWeek(e.target.value)} /></div>
+        <Button disabled={weeklyBusy || !week} onClick={generateWeekly}>{weeklyBusy ? "Erstelle..." : "Wochenrechnungen erstellen"}</Button>
+        {weeklyMessage && <p className="text-sm">{weeklyMessage}</p>}
+      </div>
       <div className="flex items-center gap-2">
         <div className="relative w-full max-w-xl">
           <Input

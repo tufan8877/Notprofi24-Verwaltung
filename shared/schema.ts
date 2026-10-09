@@ -48,13 +48,14 @@ export const jobs = pgTable("jobs", {
   propertyManagerId: integer("property_manager_id").references(() => propertyManagers.id),
   privateCustomerId: integer("private_customer_id").references(() => privateCustomers.id),
   serviceAddress: text("service_address").notNull(),
-  companyId: integer("company_id").references(() => companies.id).notNull(),
+  companyId: integer("company_id").references(() => companies.id),
+  propertyId: integer("property_id").references(() => properties.id),
   trade: text("trade").notNull(),
   activity: text("activity").notNull(),
   status: text("status").notNull().default("open"), // 'open', 'done', 'canceled'
   reportText: text("report_text"),
-  // ✅ du wolltest 49 + Steuer pro Einsatz — hier ist der Default 49 (netto)
-  referralFee: numeric("referral_fee").notNull().default("49"),
+  // Standard: 59 EUR netto je vermitteltem Auftrag zzgl. 20 % USt.
+  referralFee: numeric("referral_fee").notNull().default("59"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -155,3 +156,41 @@ export type InvoiceItem = typeof invoiceItems.$inferSelect;
 export type CreateJobRequest = InsertJob;
 export type UpdateJobRequest = Partial<InsertJob>;
 export type GenerateInvoicesRequest = { monthYear: string };
+
+
+// === Liegenschaften pro Hausverwaltung ===
+// Separat von der Hausverwaltung: eine Verwaltung betreut mehrere Objekte.
+export const properties = pgTable("properties", {
+  id: serial("id").primaryKey(),
+  propertyManagerId: integer("property_manager_id").references(() => propertyManagers.id).notNull(),
+  name: text("name"),
+  address: text("address").notNull(),
+  emergencyInstructions: text("emergency_instructions"),
+  contactPhone: text("contact_phone"),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// === Notrufe: auch Anrufe ohne kostenpflichtigen Einsatz erfassen ===
+export const emergencyCalls = pgTable("emergency_calls", {
+  id: serial("id").primaryKey(),
+  propertyManagerId: integer("property_manager_id").references(() => propertyManagers.id),
+  propertyId: integer("property_id").references(() => properties.id),
+  jobId: integer("job_id").references(() => jobs.id),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+  callerName: text("caller_name"),
+  callerPhone: text("caller_phone"),
+  serviceAddress: text("service_address"),
+  issueType: text("issue_type").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("received"),
+  resolution: text("resolution"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPropertySchema = createInsertSchema(properties).omit({ id: true, createdAt: true });
+export const insertEmergencyCallSchema = createInsertSchema(emergencyCalls).omit({ id: true, createdAt: true });
+export type Property = typeof properties.$inferSelect;
+export type EmergencyCall = typeof emergencyCalls.$inferSelect;
+export type InsertProperty = z.infer<typeof insertPropertySchema>;
+export type InsertEmergencyCall = z.infer<typeof insertEmergencyCallSchema>;

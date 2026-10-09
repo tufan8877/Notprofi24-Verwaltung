@@ -9,6 +9,7 @@ import { startOfMonth, endOfMonth, parseISO } from "date-fns";
 import { and, eq, between, desc, sql, inArray } from "drizzle-orm";
 
 import { storage } from "./storage";
+import { registerEmergencyRoutes } from "./emergency-routes";
 import { api } from "@shared/routes";
 import { generateJobPdf, generateInvoicePdf } from "./pdf";
 
@@ -18,7 +19,7 @@ import { jobs, invoiceItems, invoices as invoicesTable } from "@shared/schema";
 const SessionStore = MemoryStore(session);
 
 const VAT_RATE = 0.2; // 20% USt
-const DEFAULT_FEE_NET = 49.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
+const DEFAULT_FEE_NET = 59.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
 const CANCELLATION_FEE_NET = 14.9; // Stornogebühr Netto
 
 // Settings werden als JSON-Datei gespeichert (einfach & ohne DB-Migration)
@@ -40,7 +41,7 @@ const DEFAULT_SETTINGS: SettingsStore = {
   uid: "ATU12345678",
   emailFromName: "Notprofi24 Admin",
   emailFromEmail: "noreply@notprofi24.at",
-  standardProvision: 60,
+  standardProvision: 59,
 };
 
 function normalizeNumber(v: unknown, fallback: number) {
@@ -157,6 +158,9 @@ async function mergeDuplicateInvoices(companyId: number, monthYear: string) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
+    throw new Error("SESSION_SECRET must be set to at least 32 characters in production");
+  }
   app.use(
     session({
       store: new SessionStore({ checkPeriod: 86400000 }),
@@ -190,6 +194,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.getStats();
       res.json({ ok: true, db: true });
 
+    } catch {
+      res.json({ ok: true, db: false });
+    }
+  });
+
   // SETTINGS (Admin)
   app.get("/api/settings", requireAuth, async (_req, res) => {
     const s = await readSettings();
@@ -206,10 +215,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ...saved,
       defaultReferralFee: saved.standardProvision,
     });
-  });
-    } catch {
-      res.json({ ok: true, db: false });
-    }
   });
 
   // AUTH
@@ -237,6 +242,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (req.path === "/login" || req.path === "/logout" || req.path === "/me" || req.path === "/health") return next();
     return requireAuth(req, res, next);
   });
+
+  registerEmergencyRoutes(app);
 
   // PROPERTY MANAGERS
   app.get(api.propertyManagers.list.path, async (_req, res) => res.json(await storage.getPropertyManagers()));
@@ -354,7 +361,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = startOfMonth(date);
     const end = endOfMonth(date);
 
-    const settings: any = await (storage as any).getSettings?.().catch(() => null);
+    const settings = await readSettings();
     const standardFeeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
 
     // Alle Jobs, die in die Abrechnung dürfen (open/done/cancelled/storniert)
@@ -375,10 +382,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Bereits verrechnete Jobs raus
     const existing = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
     const alreadyInvoiced = new Set(existing.map((x) => x.jobId));
-    const newJobs = jobsInMonth.filter((j) => !alreadyInvoiced.has(j.id));
+    const newJobs = jobsInMonth.filter((j) => j.companyId !== null && !alreadyInvoiced.has(j.id));
 
     // Firmen im Monat (auch wenn keine neuen Jobs → Dubletten mergen + totals fixen)
-    const companyIds = [...new Set(jobsInMonth.map((j) => j.companyId))];
+    const companyIds = [...new Set(jobsInMonth.map((j) => j.companyId).filter((id): id is number => id !== null))];
 
     let touched = 0;
 
@@ -411,7 +418,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (newJobsForCompany.length > 0) {
         await db.insert(invoiceItems).values(
           newJobsForCompany.map((j) => {
-            const feeNet = isCancelledStatus(String(j.status)) ? 0 : standardFeeNet;
+            const feeNet = isCancelledStatus(String(j.status)) ? 0 : Number(j.referralFee ?? standardFeeNet);
             return {
               invoiceId: (master as any).id,
               jobId: j.id,
@@ -428,6 +435,66 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     res.json({ generatedCount: touched, message: `Updated/created ${touched} invoices` });
+  });
+
+  // Wöchentliche Abrechnung: ISO-Kalenderwoche (Montag bis Sonntag).
+  // Erstellt pro Betrieb und Kalenderwoche genau eine Rechnung, ohne bestehende
+  // bezahlte/versandte Rechnungen zu verändern.
+  app.post("/api/invoices/generate-weekly", async (req, res) => {
+    const parsed = /^([0-9]{4})-W([0-9]{2})$/.exec(String(req.body?.week ?? ""));
+    if (!parsed) return res.status(400).json({ message: "Kalenderwoche im Format JJJJ-Www erforderlich" });
+    const year = Number(parsed[1]);
+    const week = Number(parsed[2]);
+    if (week < 1 || week > 53) return res.status(400).json({ message: "Ungültige Kalenderwoche" });
+    // ISO week 1 contains January 4th.
+    const jan4 = new Date(Date.UTC(year, 0, 4));
+    const monday = new Date(jan4);
+    monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7) + (week - 1) * 7);
+    const isoWeekYear = (date: Date) => {
+      const thursday = new Date(date);
+      thursday.setUTCDate(date.getUTCDate() + 3);
+      return thursday.getUTCFullYear();
+    };
+    if (isoWeekYear(monday) !== year) return res.status(400).json({ message: "Kalenderwoche existiert nicht" });
+    const end = new Date(monday);
+    end.setUTCDate(end.getUTCDate() + 7);
+    const period = parsed[0];
+    const eligible = await db.select().from(jobs).where(
+      and(sql`${jobs.dateTime} >= ${monday} AND ${jobs.dateTime} < ${end}`,
+          inArray(jobs.status, ["done", "erledigt"]))
+    );
+    const assigned = eligible.filter(j => j.companyId !== null);
+    const existing = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
+    const used = new Set(existing.map(i => i.jobId));
+    const pending = assigned.filter(j => !used.has(j.id));
+    const companyIds = [...new Set(pending.map(j => j.companyId!))];
+    let generatedCount = 0;
+    for (const companyId of companyIds) {
+      const items = pending.filter(j => j.companyId === companyId);
+      if (!items.length) continue;
+      const previous = await db.select().from(invoicesTable).where(
+        and(eq(invoicesTable.companyId, companyId), eq(invoicesTable.monthYear, period))
+      );
+      if (previous.length) continue; // never modify an issued invoice
+      await db.transaction(async tx => {
+        const [invoice] = await tx.insert(invoicesTable).values({
+          invoiceNumber: `TEMP-${year}-${week}-${companyId}-${Date.now()}`,
+          monthYear: period, companyId, status: "unpaid", totalAmount: "0.00"
+        }).returning();
+        await tx.update(invoicesTable).set({
+          invoiceNumber: `NP24-${year}-${String(invoice.id).padStart(6, "0")}`
+        }).where(eq(invoicesTable.id, invoice.id));
+        await tx.insert(invoiceItems).values(items.map(job => ({
+          invoiceId: invoice.id, jobId: job.id, amount: String(job.referralFee ?? "59")
+        })));
+        const netCents = items.reduce((sum, job) => sum + Math.round(Number(job.referralFee ?? "59") * 100), 0);
+        const grossCents = netCents + Math.round(netCents * VAT_RATE);
+        await tx.update(invoicesTable).set({ totalAmount: (grossCents / 100).toFixed(2) })
+          .where(eq(invoicesTable.id, invoice.id));
+      });
+      generatedCount++;
+    }
+    res.json({ generatedCount, message: `${generatedCount} Wochenabrechnungen erstellt` });
   });
 
   app.post(api.invoices.markPaid.path, async (req, res) => {

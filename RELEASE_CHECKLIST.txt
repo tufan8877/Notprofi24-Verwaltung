@@ -1,0 +1,7 @@
+Notprofi24 Entwicklungsstand
+
+Neu: Liegenschaften, Notrufjournal, Admin-Oberfläche, Wochenabrechnung, 59 EUR netto plus 20 Prozent USt, Einsätze ohne zugewiesenen Betrieb.
+
+Vor Produktivsetzung: npm ci; npm run check; npm run build; Testdatenbank-Backup; Schema-Migration auf Testdatenbank; API- und UI-Funktionstests; Rechnungs-PDFs und Steuerangaben prüfen; Datenschutz und Backup prüfen.
+
+Achtung: Monatsabrechnung ist weiterhin als Alt-Funktion vorhanden. Wöchentliche Rechnungserstellung erfolgt über /api/invoices/generate-weekly. Bereits fakturierte Jobs werden ausgelassen. Die aktuelle Wochenfunktion ist noch nicht auf Parallelzugriffe getestet. Die Firmen-Stammdaten in den Einstellungen enthalten Platzhalter. Kein automatisches Render-Deployment.

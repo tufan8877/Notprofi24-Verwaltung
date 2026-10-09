@@ -258,7 +258,7 @@ export class DatabaseStorage implements IStorage {
       companyName: "Notprofi24",
       address: "",
       uid: "",
-      defaultReferralFee: 49,
+      defaultReferralFee: 59,
       vatRate: 20,
       cancelFeeNet: 14.9,
     };

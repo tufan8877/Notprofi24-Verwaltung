@@ -9,6 +9,7 @@ import { startOfMonth, endOfMonth, parseISO } from "date-fns";
 import { and, eq, between, desc, sql, inArray } from "drizzle-orm";
 
 import { storage } from "./storage";
+import { registerEmergencyRoutes } from "./emergency-routes";
 import { api } from "@shared/routes";
 import { generateJobPdf, generateInvoicePdf } from "./pdf";
 
@@ -190,6 +191,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.getStats();
       res.json({ ok: true, db: true });
 
+    } catch {
+      res.json({ ok: true, db: false });
+    }
+  });
+
   // SETTINGS (Admin)
   app.get("/api/settings", requireAuth, async (_req, res) => {
     const s = await readSettings();
@@ -206,10 +212,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ...saved,
       defaultReferralFee: saved.standardProvision,
     });
-  });
-    } catch {
-      res.json({ ok: true, db: false });
-    }
   });
 
   // AUTH
@@ -237,6 +239,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (req.path === "/login" || req.path === "/logout" || req.path === "/me" || req.path === "/health") return next();
     return requireAuth(req, res, next);
   });
+
+  registerEmergencyRoutes(app);
 
   // PROPERTY MANAGERS
   app.get(api.propertyManagers.list.path, async (_req, res) => res.json(await storage.getPropertyManagers()));
@@ -354,7 +358,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = startOfMonth(date);
     const end = endOfMonth(date);
 
-    const settings: any = await (storage as any).getSettings?.().catch(() => null);
+    const settings = await readSettings();
     const standardFeeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
 
     // Alle Jobs, die in die Abrechnung dürfen (open/done/cancelled/storniert)

@@ -48,7 +48,8 @@ export const jobs = pgTable("jobs", {
   propertyManagerId: integer("property_manager_id").references(() => propertyManagers.id),
   privateCustomerId: integer("private_customer_id").references(() => privateCustomers.id),
   serviceAddress: text("service_address").notNull(),
-  companyId: integer("company_id").references(() => companies.id).notNull(),
+  companyId: integer("company_id").references(() => companies.id),
+  propertyId: integer("property_id").references(() => properties.id),
   trade: text("trade").notNull(),
   activity: text("activity").notNull(),
   status: text("status").notNull().default("open"), // 'open', 'done', 'canceled'

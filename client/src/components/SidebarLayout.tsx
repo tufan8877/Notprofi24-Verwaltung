@@ -9,7 +9,8 @@ import {
   FileText, 
   Settings, 
   LogOut,
-  Menu
+  Menu,
+  PhoneCall
 } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import { useState } from "react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
+  { name: "Notdienstzentrale", href: "/emergency-center", icon: PhoneCall },
   { name: "Einsätze", href: "/jobs", icon: Briefcase },
   { name: "Hausverwaltungen", href: "/property-managers", icon: Building2 },
   { name: "Privatkunden", href: "/private-customers", icon: Users },

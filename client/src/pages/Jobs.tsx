@@ -297,7 +297,7 @@ function JobDialog({
       activity: "",
       status: "open",
       reportText: "",
-      referralFee: "49",
+      referralFee: "59",
     },
   });
 
@@ -315,7 +315,7 @@ function JobDialog({
         activity: item.activity ?? "",
         status: item.status ?? "open",
         reportText: item.reportText ?? "",
-        referralFee: item.referralFee ?? "49",
+        referralFee: item.referralFee ?? "59",
       });
     } else {
       form.reset({
@@ -329,7 +329,7 @@ function JobDialog({
         activity: "",
         status: "open",
         reportText: "",
-        referralFee: "49",
+        referralFee: "59",
       });
     }
   }, [open, item, form]);
@@ -346,7 +346,7 @@ function JobDialog({
         if (!data.privateCustomerId) throw new Error("Bitte Privatkunde auswählen.");
       }
 
-      if (!data.companyId) throw new Error("Bitte Betrieb auswählen.");
+      if (!data.companyId) data.companyId = null;
       if (!data.serviceAddress || String(data.serviceAddress).trim().length < 3) throw new Error("Bitte Einsatzadresse eingeben.");
       if (!data.trade) throw new Error("Bitte Gewerk wählen.");
       if (!data.activity || String(data.activity).trim().length < 3) throw new Error("Bitte Tätigkeit / Problem eingeben.");
@@ -452,9 +452,10 @@ function JobDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Betrieb</FormLabel>
-                    <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
+                    <Select value={field.value ? String(field.value) : "unassigned"} onValueChange={(v) => field.onChange(v === "unassigned" ? null : Number(v))}>
                       <FormControl><SelectTrigger><SelectValue placeholder="Betrieb auswählen" /></SelectTrigger></FormControl>
                       <SelectContent>
+                        <SelectItem value="unassigned">Noch nicht zugewiesen</SelectItem>
                         {(companies || []).map((c) => (
                           <SelectItem key={c.id} value={String(c.id)}>{c.companyName}</SelectItem>
                         ))}

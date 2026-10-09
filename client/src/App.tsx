@@ -12,6 +12,7 @@ import PrivateCustomers from "@/pages/PrivateCustomers";
 import Companies from "@/pages/Companies";
 import Invoices from "@/pages/Invoices";
 import Settings from "@/pages/Settings";
+import EmergencyCenter from "@/pages/EmergencyCenter";
 import { SidebarLayout } from "@/components/SidebarLayout";
 import { useAuth } from "@/hooks/use-auth";
 import { Loader2 } from "lucide-react";
@@ -50,6 +51,9 @@ function Router() {
       {/* Protected Routes */}
       <Route path="/">
         {() => <ProtectedRoute component={Dashboard} />}
+      </Route>
+      <Route path="/emergency-center">
+        {() => <ProtectedRoute component={EmergencyCenter} />}
       </Route>
       <Route path="/jobs">
         {() => <ProtectedRoute component={Jobs} />}

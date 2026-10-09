@@ -158,6 +158,9 @@ async function mergeDuplicateInvoices(companyId: number, monthYear: string) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
+    throw new Error("SESSION_SECRET must be set to at least 32 characters in production");
+  }
   app.use(
     session({
       store: new SessionStore({ checkPeriod: 86400000 }),
@@ -379,10 +382,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Bereits verrechnete Jobs raus
     const existing = await db.select({ jobId: invoiceItems.jobId }).from(invoiceItems);
     const alreadyInvoiced = new Set(existing.map((x) => x.jobId));
-    const newJobs = jobsInMonth.filter((j) => !alreadyInvoiced.has(j.id));
+    const newJobs = jobsInMonth.filter((j) => j.companyId !== null && !alreadyInvoiced.has(j.id));
 
     // Firmen im Monat (auch wenn keine neuen Jobs → Dubletten mergen + totals fixen)
-    const companyIds = [...new Set(jobsInMonth.map((j) => j.companyId))];
+    const companyIds = [...new Set(jobsInMonth.map((j) => j.companyId).filter((id): id is number => id !== null))];
 
     let touched = 0;
 

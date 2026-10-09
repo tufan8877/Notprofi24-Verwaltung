@@ -131,7 +131,8 @@ export async function generateJobPdf(
 export async function generateInvoicePdf(
   invoice: Invoice,
   company: Company | null,
-  items: (InvoiceItem & { job: Job })[]
+  items: (InvoiceItem & { job: Job })[],
+  issuer?: { companyName: string; address: string; uid: string }
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage();
@@ -144,6 +145,11 @@ export async function generateInvoicePdf(
 
   page.drawText("Rechnung / Invoice", { x: margin, y, size: 20, font: boldFont });
   y -= 30;
+  if (issuer) {
+    page.drawText(issuer.companyName, { x: margin, y, size: 11, font: boldFont }); y -= 15;
+    page.drawText(issuer.address, { x: margin, y, size: 10, font }); y -= 15;
+    if (issuer.uid) { page.drawText(`UID: ${issuer.uid}`, { x: margin, y, size: 10, font }); y -= 18; }
+  }
 
   const invoiceNumber =
     (invoice as any).invoiceNumber ??

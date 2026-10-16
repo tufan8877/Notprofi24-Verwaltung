@@ -425,22 +425,28 @@ function JobDialog({
               )}
             />
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="trade"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Gewerk</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl><SelectTrigger><SelectValue placeholder="Gewerk wählen" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value="Installateur">Installateur</SelectItem>
-                        <SelectItem value="Elektriker">Elektriker</SelectItem>
-                        <SelectItem value="Dachdecker">Dachdecker</SelectItem>
-                        <SelectItem value="Schlosser">Schlosser</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <select
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.target.value)}
+                        className="flex h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+                      >
+                        <option value="Installateur">Installateur</option>
+                        <option value="Elektriker">Elektriker</option>
+                        <option value="Dachdecker">Dachdecker</option>
+                        <option value="Schlosser">Schlosser</option>
+                      </select>
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

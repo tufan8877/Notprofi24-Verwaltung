@@ -10,13 +10,30 @@ import { api } from "@shared/routes";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import { useJobs, useCreateJob, useUpdateJob } from "@/hooks/use-jobs";
 import { useCompanies } from "@/hooks/use-companies";
 import { usePropertyManagers } from "@/hooks/use-property-managers";
 import { usePrivateCustomers } from "@/hooks/use-private-customers";
 import { useLocation } from "wouter";
+
+const nativeSelectClassName = "h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm";
+const selectionCollator = new Intl.Collator("de-AT", { numeric: true, sensitivity: "base" });
+
+function sortedSelection(items: any[], nameKey: "name" | "companyName") {
+  return [...items].sort((a, b) =>
+    selectionCollator.compare(String(a[nameKey] ?? "").trim(), String(b[nameKey] ?? "").trim()) ||
+    selectionCollator.compare(String(a.address ?? "").trim(), String(b.address ?? "").trim()) ||
+    Number(a.id) - Number(b.id)
+  );
+}
+
+function selectionLabel(item: any, nameKey: "name" | "companyName") {
+  return [item[nameKey], item.address, item.phone]
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean)
+    .join(" — ");
+}
 
 function statusBadge(status: string) {
   if (status === "done") return <Badge className="bg-green-600">Erledigt</Badge>;
@@ -284,6 +301,10 @@ function JobDialog({
   const { mutateAsync: create } = useCreateJob();
   const { mutateAsync: update } = useUpdateJob();
 
+  const sortedCompanies = useMemo(() => sortedSelection(companies, "companyName"), [companies]);
+  const sortedManagers = useMemo(() => sortedSelection(managers, "name"), [managers]);
+  const sortedCustomers = useMemo(() => sortedSelection(customers, "name"), [customers]);
+
   const form = useForm({
     resolver: zodResolver(api.jobs.create.input),
     defaultValues: {
@@ -365,14 +386,14 @@ function JobDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{item ? "Einsatz bearbeiten" : "Neuer Einsatz"}</DialogTitle>
         </DialogHeader>
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="dateTime"
@@ -397,16 +418,20 @@ function JobDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Status</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger><SelectValue placeholder="Status wählen" /></SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="open">Offen</SelectItem>
-                        <SelectItem value="done">Erledigt</SelectItem>
-                        <SelectItem value="canceled">Storniert</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <select
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.target.value)}
+                        className={nativeSelectClassName}
+                      >
+                        <option value="open">Offen</option>
+                        <option value="done">Erledigt</option>
+                        <option value="canceled">Storniert</option>
+                      </select>
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -439,7 +464,7 @@ function JobDialog({
                         value={field.value}
                         onBlur={field.onBlur}
                         onChange={(event) => field.onChange(event.target.value)}
-                        className="flex h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+                        className={nativeSelectClassName}
                       >
                         <option value="Installateur">Installateur</option>
                         <option value="Elektriker">Elektriker</option>
@@ -458,34 +483,47 @@ function JobDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Betrieb</FormLabel>
-                    <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
-                      <FormControl><SelectTrigger><SelectValue placeholder="Betrieb auswählen" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        {(companies || []).map((c) => (
-                          <SelectItem key={c.id} value={String(c.id)}>{c.companyName}</SelectItem>
+                    <FormControl>
+                      <select
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value ? String(field.value) : ""}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.target.value ? Number(event.target.value) : undefined)}
+                        className={nativeSelectClassName}
+                      >
+                        <option value="" disabled>Betrieb auswählen</option>
+                        {sortedCompanies.map((company) => (
+                          <option key={company.id} value={String(company.id)}>{selectionLabel(company, "companyName")}</option>
                         ))}
-                      </SelectContent>
-                    </Select>
+                      </select>
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="customerType"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Kundentyp</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl><SelectTrigger><SelectValue placeholder="Kundentyp wählen" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value="property_manager">Hausverwaltung</SelectItem>
-                        <SelectItem value="private_customer">Privatkunde</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <select
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.target.value)}
+                        className={nativeSelectClassName}
+                      >
+                        <option value="property_manager">Hausverwaltung</option>
+                        <option value="private_customer">Privatkunde</option>
+                      </select>
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -498,14 +536,21 @@ function JobDialog({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Hausverwaltung</FormLabel>
-                      <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
-                        <FormControl><SelectTrigger><SelectValue placeholder="HV auswählen" /></SelectTrigger></FormControl>
-                        <SelectContent>
-                          {(managers || []).map((m) => (
-                            <SelectItem key={m.id} value={String(m.id)}>{m.name} — {m.phone}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                      <select
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value ? String(field.value) : ""}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.target.value ? Number(event.target.value) : undefined)}
+                        className={nativeSelectClassName}
+                      >
+                        <option value="" disabled>HV auswählen</option>
+                        {sortedManagers.map((manager) => (
+                          <option key={manager.id} value={String(manager.id)}>{selectionLabel(manager, "name")}</option>
+                        ))}
+                      </select>
+                    </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -517,14 +562,21 @@ function JobDialog({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Privatkunde</FormLabel>
-                      <Select value={field.value ? String(field.value) : ""} onValueChange={(v) => field.onChange(Number(v))}>
-                        <FormControl><SelectTrigger><SelectValue placeholder="Privatkunde auswählen" /></SelectTrigger></FormControl>
-                        <SelectContent>
-                          {(customers || []).map((c) => (
-                            <SelectItem key={c.id} value={String(c.id)}>{c.name} — {c.phone}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                      <select
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value ? String(field.value) : ""}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.target.value ? Number(event.target.value) : undefined)}
+                        className={nativeSelectClassName}
+                      >
+                        <option value="" disabled>Privatkunde auswählen</option>
+                        {sortedCustomers.map((customer) => (
+                          <option key={customer.id} value={String(customer.id)}>{selectionLabel(customer, "name")}</option>
+                        ))}
+                      </select>
+                    </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}

@@ -55,7 +55,7 @@ async function seed() {
     activity: "Rohrbruch behoben",
     status: "done",
     reportText: "Wasser abgedreht, Rohr getauscht.",
-    referralFee: "60"
+    referralFee: "65.83"
   });
 
   // Job 2: Open (today)
@@ -68,7 +68,7 @@ async function seed() {
     trade: "Glaser",
     activity: "Fensterbruch",
     status: "open",
-    referralFee: "60"
+    referralFee: "65.83"
   });
 
   console.log("Seeding complete!");

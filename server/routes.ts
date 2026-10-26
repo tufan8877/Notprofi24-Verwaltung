@@ -18,7 +18,7 @@ import { jobs, invoiceItems, invoices as invoicesTable } from "@shared/schema";
 const SessionStore = MemoryStore(session);
 
 const VAT_RATE = 0.2; // 20% USt
-const DEFAULT_FEE_NET = 49.0; // Standard Vermittlungsgebühr (Netto) falls Settings leer
+const DEFAULT_FEE_NET = 65.83; // 79,00 € brutto pro Auftrag bei 20 % USt
 const CANCELLATION_FEE_NET = 14.9; // Stornogebühr Netto
 
 // Settings werden als JSON-Datei gespeichert (einfach & ohne DB-Migration)
@@ -40,7 +40,7 @@ const DEFAULT_SETTINGS: SettingsStore = {
   uid: "ATU12345678",
   emailFromName: "Notprofi24 Admin",
   emailFromEmail: "noreply@notprofi24.at",
-  standardProvision: 60,
+  standardProvision: 65.83,
 };
 
 function normalizeNumber(v: unknown, fallback: number) {
@@ -52,16 +52,19 @@ async function readSettings(): Promise<SettingsStore> {
   try {
     const raw = await fs.readFile(SETTINGS_PATH, "utf-8");
     const parsed = JSON.parse(raw ?? "{}");
+    const savedProvision = normalizeNumber(
+      parsed.standardProvision ?? parsed.defaultReferralFee,
+      DEFAULT_SETTINGS.standardProvision
+    );
+    // Frühere Standardwerte auf die neu vereinbarte Gebühr umstellen.
+    const standardProvision = [49, 60].includes(savedProvision) ? 65.83 : savedProvision;
     return {
       companyName: String(parsed.companyName ?? DEFAULT_SETTINGS.companyName),
       address: String(parsed.address ?? DEFAULT_SETTINGS.address),
       uid: String(parsed.uid ?? DEFAULT_SETTINGS.uid),
       emailFromName: String(parsed.emailFromName ?? DEFAULT_SETTINGS.emailFromName),
       emailFromEmail: String(parsed.emailFromEmail ?? DEFAULT_SETTINGS.emailFromEmail),
-      standardProvision: normalizeNumber(
-        parsed.standardProvision ?? parsed.defaultReferralFee,
-        DEFAULT_SETTINGS.standardProvision
-      ),
+      standardProvision,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -112,24 +115,30 @@ function isCancelledStatus(status: string) {
 async function recalcInvoiceTotals(invoiceId: number) {
   // Summe Netto: stornierte Jobs werden NICHT in die Summe eingerechnet
   const rows = await db
-    .select({
-      totalNet: sql<number>`coalesce(sum(case when ${jobs.status} in ('cancelled','storniert') then 0 else ${invoiceItems.amount} end), 0)`,
-      count: sql<number>`coalesce(count(*), 0)`,
-    })
+    .select({ amount: invoiceItems.amount, status: jobs.status })
     .from(invoiceItems)
     .innerJoin(jobs, eq(jobs.id, invoiceItems.jobId))
     .where(eq(invoiceItems.invoiceId, invoiceId));
 
-  const totalNet = Number(rows?.[0]?.totalNet ?? 0);
-  const vat = +(totalNet * VAT_RATE).toFixed(2);
-  const totalGross = +(totalNet + vat).toFixed(2);
+  const billableRows = rows.filter((row) => !isCancelledStatus(String(row.status)));
+  const totalNetCents = billableRows.reduce(
+    (sum, row) => sum + Math.round(Number(row.amount) * 100),
+    0
+  );
+  const vatCents = billableRows.reduce(
+    (sum, row) => sum + Math.round(Math.round(Number(row.amount) * 100) * VAT_RATE),
+    0
+  );
+  const totalNet = totalNetCents / 100;
+  const vat = vatCents / 100;
+  const totalGross = (totalNetCents + vatCents) / 100;
 
   await db
     .update(invoicesTable)
     .set({ totalAmount: totalGross.toFixed(2) }) // totalAmount = BRUTTO
     .where(eq(invoicesTable.id, invoiceId));
 
-  return { totalNet, vat, totalGross, count: Number(rows?.[0]?.count ?? 0) };
+  return { totalNet, vat, totalGross, count: rows.length };
 }
 
 async function mergeDuplicateInvoices(companyId: number, monthYear: string) {
@@ -354,8 +363,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = startOfMonth(date);
     const end = endOfMonth(date);
 
-    const settings: any = await (storage as any).getSettings?.().catch(() => null);
-    const standardFeeNet = Number(settings?.standardProvision ?? DEFAULT_FEE_NET);
+    const settings = await readSettings();
+    const standardFeeNet = Number(settings.standardProvision ?? DEFAULT_FEE_NET);
 
     // Alle Jobs, die in die Abrechnung dürfen (open/done/cancelled/storniert)
     const jobsInMonth = await db

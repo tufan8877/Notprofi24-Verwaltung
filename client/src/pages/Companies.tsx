@@ -114,7 +114,7 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
     values: item,
   });
 
-  const availableTrades = ["Installateur", "Elektriker", "Dachdecker", "Schlosser"];
+  const availableTrades = ["Installateur", "Elektriker", "Dachdecker", "Schlosser", "Glaser"];
 
   async function onSubmit(data: any) {
     try {

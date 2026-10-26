@@ -226,13 +226,16 @@ export async function generateInvoicePdf(
 
   const vatRate = toMoney((invoice as any).vatRate ?? (invoice as any).vat_rate ?? 0.2);
 
+  const billableItems = items.filter(
+    (item) => !["cancelled", "canceled", "storniert"].includes(String((item.job as any)?.status ?? "").toLowerCase())
+  );
   const subtotalNet =
     toMoney((invoice as any).subtotalNet ?? (invoice as any).subtotal_net) ||
-    toMoney(items.reduce((sum, it) => sum + toMoney((it as any).amount), 0));
+    toMoney(billableItems.reduce((sum, it) => sum + toMoney((it as any).amount), 0));
 
   const vatAmount =
     toMoney((invoice as any).vatAmount ?? (invoice as any).vat_amount) ||
-    toMoney(subtotalNet * vatRate);
+    toMoney(billableItems.reduce((sum, it) => sum + toMoney(toMoney((it as any).amount) * vatRate), 0));
 
   const totalGross =
     toMoney((invoice as any).totalGross ?? (invoice as any).total_gross ?? (invoice as any).totalAmount ?? (invoice as any).total_amount) ||
@@ -258,7 +261,7 @@ export async function generateInvoicePdf(
   page.drawText(`€ ${totalGross.toFixed(2)}`, { x: width - margin - 70, y, size: 12, font: boldFont });
   y -= 35;
 
-  page.drawText("Vermittlungsgebühr Notprofi24.at: 49,00 € netto pro vermitteltem Auftrag + USt.", {
+  page.drawText("Vermittlungsgebühr: 65,83 € netto + 13,17 € USt = 79,00 € brutto je Auftrag.", {
     x: margin,
     y,
     size: 10,

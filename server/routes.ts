@@ -98,8 +98,8 @@ const STATUS_DONE = "done";
 const STATUS_CANCELLED_1 = "cancelled";
 const STATUS_CANCELLED_2 = "storniert";
 
-// Alle Status, die in die Abrechnung sollen
-const BILLING_STATUSES = [STATUS_OPEN, STATUS_DONE, STATUS_CANCELLED_1, STATUS_CANCELLED_2] as const;
+// Stornierte Aufträge werden nicht abgerechnet.
+const BILLING_STATUSES = [STATUS_OPEN, STATUS_DONE] as const;
 
 declare module "express-session" {
   interface SessionData {
@@ -109,7 +109,7 @@ declare module "express-session" {
 }
 
 function isCancelledStatus(status: string) {
-  return status === STATUS_CANCELLED_1 || status === STATUS_CANCELLED_2;
+  return ["canceled", "cancelled", "storniert"].includes(String(status ?? "").trim().toLowerCase());
 }
 
 async function recalcInvoiceTotals(invoiceId: number) {
@@ -305,7 +305,51 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.put(api.jobs.update.path, async (req, res) => {
     const input = api.jobs.update.input.parse(req.body);
-    res.json(await storage.updateJob(Number(req.params.id), input));
+    const updated = await storage.updateJob(Number(req.params.id), input);
+
+    if (isCancelledStatus(String(updated.status))) {
+      const linkedItems = await db
+        .select({
+          invoiceId: invoiceItems.invoiceId,
+          invoiceStatus: invoicesTable.status,
+          sentAt: invoicesTable.sentAt,
+        })
+        .from(invoiceItems)
+        .innerJoin(invoicesTable, eq(invoicesTable.id, invoiceItems.invoiceId))
+        .where(eq(invoiceItems.jobId, updated.id));
+
+      // Nur nicht versendete Entwürfe anpassen. Bereits versendete oder bezahlte
+      // Rechnungen bleiben als Beleg unverändert und müssen separat korrigiert werden.
+      const draftInvoiceIds = [...new Set(
+        linkedItems
+          .filter((item) => item.invoiceStatus !== "paid" && !item.sentAt)
+          .map((item) => item.invoiceId)
+      )];
+
+      if (draftInvoiceIds.length > 0) {
+        await db
+          .delete(invoiceItems)
+          .where(and(
+            eq(invoiceItems.jobId, updated.id),
+            inArray(invoiceItems.invoiceId, draftInvoiceIds)
+          ));
+
+        for (const invoiceId of draftInvoiceIds) {
+          const remainingItems = await db
+            .select({ id: invoiceItems.id })
+            .from(invoiceItems)
+            .where(eq(invoiceItems.invoiceId, invoiceId));
+
+          if (remainingItems.length === 0) {
+            await db.delete(invoicesTable).where(eq(invoicesTable.id, invoiceId));
+          } else {
+            await recalcInvoiceTotals(invoiceId);
+          }
+        }
+      }
+    }
+
+    res.json(updated);
   });
 
   app.post(api.jobs.generatePdf.path, async (req, res) => {

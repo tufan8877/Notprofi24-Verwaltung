@@ -336,7 +336,7 @@ function JobDialog({
         activity: item.activity ?? "",
         status: item.status ?? "open",
         reportText: item.reportText ?? "",
-        referralFee: item.referralFee ?? "49",
+        referralFee: item.referralFee ?? "65.83",
       });
     } else {
       form.reset({
@@ -470,6 +470,7 @@ function JobDialog({
                         <option value="Elektriker">Elektriker</option>
                         <option value="Dachdecker">Dachdecker</option>
                         <option value="Schlosser">Schlosser</option>
+                        <option value="Glaser">Glaser</option>
                       </select>
                     </FormControl>
                     <FormMessage />

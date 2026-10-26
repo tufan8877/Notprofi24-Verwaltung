@@ -28,7 +28,7 @@ export function useCreateJob() {
       if (!res.ok) throw new Error('Failed to create job');
       return api.jobs.create.responses[201].parse(await res.json());
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [api.jobs.list.path] }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: [api.jobs.list.path] }); },
   });
 }
 
@@ -47,7 +47,7 @@ export function useUpdateJob() {
       if (!res.ok) throw new Error('Failed to update job');
       return api.jobs.update.responses[200].parse(await res.json());
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [api.jobs.list.path] }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: [api.jobs.list.path] }); },
   });
 }
 

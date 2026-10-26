@@ -6,7 +6,7 @@ import nodemailer from "nodemailer";
 import fs from "fs/promises";
 import path from "path";
 import { startOfMonth, endOfMonth, parseISO } from "date-fns";
-import { and, eq, between, desc, sql, inArray } from "drizzle-orm";
+import { and, eq, between, desc, inArray } from "drizzle-orm";
 
 import { storage } from "./storage";
 import { api } from "@shared/routes";
@@ -95,8 +95,6 @@ async function writeSettings(next: Partial<SettingsStore> & { defaultReferralFee
 // Status-Mapping (je nach Projekt – hier die üblichen Strings)
 const STATUS_OPEN = "open";
 const STATUS_DONE = "done";
-const STATUS_CANCELLED_1 = "cancelled";
-const STATUS_CANCELLED_2 = "storniert";
 
 // Stornierte Aufträge werden nicht abgerechnet.
 const BILLING_STATUSES = [STATUS_OPEN, STATUS_DONE] as const;

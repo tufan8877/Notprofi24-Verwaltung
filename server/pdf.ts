@@ -261,7 +261,17 @@ export async function generateInvoicePdf(
   page.drawText(`€ ${totalGross.toFixed(2)}`, { x: width - margin - 70, y, size: 12, font: boldFont });
   y -= 35;
 
-  page.drawText("Vermittlungsgebühr: 65,83 € netto + 13,17 € USt = 79,00 € brutto je Auftrag.", {
+  const perJobNet = billableItems.length > 0
+    ? toMoney((billableItems[0] as any).amount)
+    : null;
+  const hasSingleFee = perJobNet !== null && billableItems.every(
+    (item) => toMoney((item as any).amount) === perJobNet
+  );
+  const feeNote = hasSingleFee
+    ? `Vermittlungsgebühr je Auftrag: € ${perJobNet!.toFixed(2)} netto + € ${toMoney(perJobNet! * vatRate).toFixed(2)} USt = € ${toMoney(perJobNet! + toMoney(perJobNet! * vatRate)).toFixed(2)} brutto.`
+    : "Vermittlungsgebühr je Auftrag; Umsatzsteuer wird separat ausgewiesen.";
+
+  page.drawText(feeNote, {
     x: margin,
     y,
     size: 10,

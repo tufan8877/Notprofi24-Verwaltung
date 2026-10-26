@@ -318,7 +318,7 @@ function JobDialog({
       activity: "",
       status: "open",
       reportText: "",
-      referralFee: "49",
+      referralFee: "65.83",
     },
   });
 
@@ -350,7 +350,7 @@ function JobDialog({
         activity: "",
         status: "open",
         reportText: "",
-        referralFee: "49",
+        referralFee: "65.83",
       });
     }
   }, [open, item, form]);

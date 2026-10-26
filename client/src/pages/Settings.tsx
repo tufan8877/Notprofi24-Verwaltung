@@ -120,12 +120,15 @@ export default function Settings() {
             </div>
 
             <div className="grid gap-2">
-              <Label>Standard Provision (€)</Label>
+              <Label>Vermittlungsgebühr je Auftrag (netto)</Label>
               <Input
                 inputMode="decimal"
                 value={String(form.standardProvision)}
                 onChange={(e) => setForm((f) => ({ ...f, standardProvision: toNumber(e.target.value) }))}
               />
+              <p className="text-sm text-slate-500">
+                Standard: 65,83 € netto + 13,17 € USt = 79,00 € brutto pro Auftrag.
+              </p>
             </div>
           </div>
 

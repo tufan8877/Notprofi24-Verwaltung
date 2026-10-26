@@ -233,12 +233,20 @@ export default function InvoicesPage() {
     return round2(toNumber(inv.totalAmount));
   }
 
-  function computeInvoiceVat(net: number): number {
-    return round2(net * VAT_RATE);
+  function computeInvoiceVat(inv: Invoice): number {
+    const items = inv.items ?? [];
+    if (items.length > 0) {
+      return round2(items.reduce((sum, item) => {
+        const status = normalizeText(item.job?.status);
+        if (["cancelled", "canceled", "storniert"].includes(status)) return sum;
+        return sum + round2(toNumber(item.amount) * VAT_RATE);
+      }, 0));
+    }
+    return round2(computeInvoiceNet(inv) * VAT_RATE);
   }
 
-  function computeInvoiceGross(net: number): number {
-    return round2(net + computeInvoiceVat(net));
+  function computeInvoiceGross(inv: Invoice): number {
+    return round2(computeInvoiceNet(inv) + computeInvoiceVat(inv));
   }
 
   function computeInvoiceCount(inv: Invoice): number {
@@ -253,8 +261,8 @@ export default function InvoicesPage() {
       const companyName = inv.company?.companyName ?? "";
       const status = statusLabel(inv.status);
       const net = computeInvoiceNet(inv);
-      const vat = computeInvoiceVat(net);
-      const gross = computeInvoiceGross(net);
+      const vat = computeInvoiceVat(inv);
+      const gross = computeInvoiceGross(inv);
       const jobsCount = computeInvoiceCount(inv);
 
       const hay = [
@@ -294,9 +302,7 @@ export default function InvoicesPage() {
 
   // Some UIs show “Brutto” but mistakenly show Net. We always compute:
   // Net = sum(items.amount)
-  // VAT 20% = net*0.2
-  // Gross = net + vat
-  // (Your requirement: 49 netto + 20% = 58.80 brutto per job; Storno 14.90 netto + 20%)
+  // VAT is rounded per job so every standard fee remains exactly 79.00 € gross.
   return (
     <div className="p-4 space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -396,8 +402,8 @@ export default function InvoicesPage() {
               <TableBody>
                 {filteredInvoices.map((inv) => {
                   const net = computeInvoiceNet(inv);
-                  const vat = computeInvoiceVat(net);
-                  const gross = computeInvoiceGross(net);
+                  const vat = computeInvoiceVat(inv);
+                  const gross = computeInvoiceGross(inv);
                   const count = computeInvoiceCount(inv);
 
                   return (
@@ -539,8 +545,8 @@ export default function InvoicesPage() {
                   <CardContent className="text-sm space-y-1">
                     {(() => {
                       const net = computeInvoiceNet(selected);
-                      const vat = computeInvoiceVat(net);
-                      const gross = computeInvoiceGross(net);
+                      const vat = computeInvoiceVat(selected);
+                      const gross = computeInvoiceGross(selected);
                       const count = computeInvoiceCount(selected);
                       return (
                         <>

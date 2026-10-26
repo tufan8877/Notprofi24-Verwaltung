@@ -1,6 +1,6 @@
 import { DataTable } from "@/components/DataTable";
 import { useCompanies, useCreateCompany, useUpdateCompany } from "@/hooks/use-companies";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { api } from "@shared/routes";
@@ -98,6 +98,7 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
   const { mutateAsync: create } = useCreateCompany();
   const { mutateAsync: update } = useUpdateCompany();
   const { toast } = useToast();
+  const submitLock = useRef(false);
 
   const form = useForm({
     resolver: zodResolver(api.companies.create.input),
@@ -117,6 +118,8 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
   const availableTrades = ["Installateur", "Elektriker", "Dachdecker", "Schlosser", "Glaser"];
 
   async function onSubmit(data: any) {
+    if (submitLock.current) return;
+    submitLock.current = true;
     try {
       if (item) await update({ id: item.id, ...data });
       else await create(data);
@@ -127,6 +130,8 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
     } catch (e: any) {
       toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
       console.error(e);
+    } finally {
+      submitLock.current = false;
     }
   }
 
@@ -256,7 +261,9 @@ function CompanyDialog({ open, onOpenChange, item }: { open: boolean; onOpenChan
             />
 
             <div className="flex justify-end pt-4">
-              <Button type="submit">{item ? "Speichern" : "Erstellen"}</Button>
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting ? "Wird gespeichert..." : item ? "Speichern" : "Erstellen"}
+              </Button>
             </div>
           </form>
         </Form>

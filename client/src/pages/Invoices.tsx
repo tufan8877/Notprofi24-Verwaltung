@@ -1,6 +1,6 @@
 // client/src/pages/Invoices.tsx
 import * as React from "react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@shared/routes";
 import { format } from "date-fns";
@@ -126,6 +126,7 @@ export default function InvoicesPage() {
   const [search, setSearch] = useState<string>("");
   const [selected, setSelected] = useState<Invoice | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const invoiceGenerationLock = useRef(false);
 
   // VAT settings (fixed 20% per your requirement)
   const VAT_RATE = 0.2;
@@ -324,7 +325,14 @@ export default function InvoicesPage() {
               onChange={(e) => setMonthYear(e.target.value)}
             />
             <Button
-              onClick={() => generateMutation.mutate({ monthYear })}
+              onClick={() => {
+                if (invoiceGenerationLock.current || generateMutation.isPending || !monthYear) return;
+                invoiceGenerationLock.current = true;
+                generateMutation.mutate(
+                  { monthYear },
+                  { onSettled: () => { invoiceGenerationLock.current = false; } }
+                );
+              }}
               disabled={generateMutation.isPending || !monthYear}
               className="shrink-0"
             >

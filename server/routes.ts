@@ -21,6 +21,24 @@ const VAT_RATE = 0.2; // 20% USt
 const DEFAULT_FEE_NET = 65.83; // 79,00 € brutto pro Auftrag bei 20 % USt
 const CANCELLATION_FEE_NET = 14.9; // Stornogebühr Netto
 
+const invoiceGenerationLocks = new Map<string, Promise<void>>();
+
+async function withInvoiceGenerationLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = invoiceGenerationLocks.get(key) ?? Promise.resolve();
+  let releaseCurrent!: () => void;
+  const current = new Promise<void>((resolve) => { releaseCurrent = resolve; });
+  const queued = previous.then(() => current);
+  invoiceGenerationLocks.set(key, queued);
+
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    releaseCurrent();
+    if (invoiceGenerationLocks.get(key) === queued) invoiceGenerationLocks.delete(key);
+  }
+}
+
 // Settings werden als JSON-Datei gespeichert (einfach & ohne DB-Migration)
 const SETTINGS_PATH = path.join(process.cwd(), "data", "settings.json");
 
@@ -401,6 +419,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post(api.invoices.generate.path, async (req, res) => {
     const { monthYear } = api.invoices.generate.input.parse(req.body);
 
+    await withInvoiceGenerationLock(monthYear, async () => {
     const date = parseISO(`${monthYear}-01`);
     const start = startOfMonth(date);
     const end = endOfMonth(date);
@@ -479,6 +498,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     res.json({ generatedCount: touched, message: `Updated/created ${touched} invoices` });
+    });
   });
 
   app.post(api.invoices.markPaid.path, async (req, res) => {

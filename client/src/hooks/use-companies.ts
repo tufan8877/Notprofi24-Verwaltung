@@ -36,7 +36,7 @@ export function useCreateCompany() {
       if (!res.ok) throw new Error(await readError(res));
       return api.companies.create.responses[201].parse(await res.json());
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: [api.companies.list.path] }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: [api.companies.list.path] }); },
   });
 }
 
@@ -55,6 +55,6 @@ export function useUpdateCompany() {
       if (!res.ok) throw new Error(await readError(res));
       return api.companies.update.responses[200].parse(await res.json());
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: [api.companies.list.path] }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: [api.companies.list.path] }); },
   });
 }

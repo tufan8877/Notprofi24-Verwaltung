@@ -53,8 +53,8 @@ export const jobs = pgTable("jobs", {
   activity: text("activity").notNull(),
   status: text("status").notNull().default("open"), // 'open', 'done', 'canceled'
   reportText: text("report_text"),
-  // ✅ du wolltest 49 + Steuer pro Einsatz — hier ist der Default 49 (netto)
-  referralFee: numeric("referral_fee").notNull().default("49"),
+  // Referral Fee is stored net; 65.83 € net + 20% VAT = 79.00 € gross.
+  referralFee: numeric("referral_fee").notNull().default("65.83"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

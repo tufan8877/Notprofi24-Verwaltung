@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DataTable } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -298,6 +298,7 @@ function JobDialog({
   onSaved?: () => void;
 }) {
   const { toast } = useToast();
+  const submitLock = useRef(false);
   const { mutateAsync: create } = useCreateJob();
   const { mutateAsync: update } = useUpdateJob();
 
@@ -358,6 +359,8 @@ function JobDialog({
   const customerType = form.watch("customerType");
 
   async function onSubmit(data: any) {
+    if (submitLock.current) return;
+    submitLock.current = true;
     try {
       if (data.customerType === "property_manager") {
         data.privateCustomerId = null;
@@ -381,6 +384,8 @@ function JobDialog({
     } catch (e: any) {
       toast({ title: "Fehler", description: String(e?.message ?? e), variant: "destructive" });
       console.error(e);
+    } finally {
+      submitLock.current = false;
     }
   }
 
@@ -610,7 +615,9 @@ function JobDialog({
             />
 
             <div className="flex justify-end pt-4">
-              <Button type="submit">{item ? "Speichern" : "Einsatz erstellen"}</Button>
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting ? "Wird gespeichert..." : item ? "Speichern" : "Einsatz erstellen"}
+              </Button>
             </div>
           </form>
         </Form>
